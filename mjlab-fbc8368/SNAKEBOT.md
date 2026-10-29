@@ -272,6 +272,7 @@ Click the viewer window to focus keyboard input.
 | T | Put the target 0.60 m ahead of COM along the head's heading |
 | Enter | Reset the robot and target |
 | Space | Pause/resume |
+| J | Print actual and commanded bottom/top servo angles for all five modules |
 
 Directions follow the head module's current heading, projected onto the
 ground plane, and do not rotate with the camera. Each key
@@ -280,6 +281,18 @@ target remains where you put it after arrival, and the robot does not reset
 when it reaches the target or when you move it farther away. Instability
 and non-finite-state recovery remain enabled; a robot reset also resets
 the target.
+
+Press **J** for a terminal snapshot of all ten servo joints in degrees,
+including actual angles and the most recently applied target angles. It
+also works while paused. Bottom is `mN_Revolute-15`; top is
+`mN_Revolute-16`. Angles are relative to each joint's model zero, rather
+than absolute module orientation or calibrated hardware servo angles.
+
+To print the angle table continuously every 0.5 simulated seconds:
+
+```bash
+uv run python -m mjlab.scripts.snakebot_keyboard --angle-print-interval 0.5
+```
 
 Change the step size or use another compatible v2 checkpoint:
 

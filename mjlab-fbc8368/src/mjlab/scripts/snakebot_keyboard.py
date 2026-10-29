@@ -72,6 +72,29 @@ def keyboard_env_cfg(initial_distance: float = 0.6) -> ManagerBasedRlEnvCfg:
   return cfg
 
 
+def module_joint_angles_deg(env) -> torch.Tensor:
+  """Return rows for modules 1-5: actual bottom/top, target bottom/top."""
+  robot = env.scene["robot"]
+  names = [
+    f"m{module}_Revolute-{joint}" for module in range(1, 6) for joint in (15, 16)
+  ]
+  joint_ids = [robot.joint_names.index(name) for name in names]
+  actual = robot.data.joint_pos[0, joint_ids].reshape(5, 2)
+  target = robot.data.joint_pos_target[0, joint_ids].reshape(5, 2)
+  return torch.rad2deg(torch.cat((actual, target), dim=1)).detach()
+
+
+def print_module_joint_angles(env) -> None:
+  print("\nServo joint angles (degrees, relative to joint zero)")
+  print("Module | Bottom actual | Top actual | Bottom target | Top target")
+  for module, angles in enumerate(module_joint_angles_deg(env).cpu().tolist(), start=1):
+    bottom, top, bottom_target, top_target = angles
+    print(
+      f"{module:6d} | {bottom:13.2f} | {top:10.2f} | "
+      f"{bottom_target:13.2f} | {top_target:10.2f}"
+    )
+
+
 class KeyboardGoalViewer(NativeMujocoViewer):
   """Queue keyboard input on the viewer thread; move goals on the main thread."""
 
@@ -87,16 +110,27 @@ class KeyboardGoalViewer(NativeMujocoViewer):
     262: (0.0, -1.0),
   }
 
-  def __init__(self, env, policy, goal_step: float = 0.1, initial_distance=0.6):
+  def __init__(
+    self,
+    env,
+    policy,
+    goal_step: float = 0.1,
+    initial_distance=0.6,
+    angle_print_interval: float = 0.0,
+  ):
     super().__init__(env, policy)
     self.goal_step = goal_step
     self.initial_distance = initial_distance
+    self.angle_print_interval = angle_print_interval
+    self._angle_elapsed = 0.0
 
   def _safe_key_callback(self, key: int) -> None:
     if key in self.DIRECTIONS:
       self.request_action("MOVE_GOAL", ("move_goal", self.DIRECTIONS[key]))
     elif key == ord("T"):
       self.request_action("RECENTER_GOAL", ("recenter_goal", None))
+    elif key == ord("J"):
+      self.request_action("PRINT_JOINT_ANGLES", ("print_joint_angles", None))
     else:
       super()._safe_key_callback(key)
 
@@ -105,7 +139,10 @@ class KeyboardGoalViewer(NativeMujocoViewer):
       return super()._handle_custom_action(action, payload)
     name, direction = payload
     env = self.env.unwrapped
-    if name == "move_goal":
+    if name == "print_joint_angles":
+      print_module_joint_angles(env)
+      return True
+    elif name == "move_goal":
       with torch.no_grad():
         forward_xy, left_xy = head_planar_axes(env)
         delta = self.goal_step * (direction[0] * forward_xy + direction[1] * left_xy)
@@ -123,6 +160,23 @@ class KeyboardGoalViewer(NativeMujocoViewer):
     print(f"Target: X={x:.2f} m, Y={y:.2f} m")
     return True
 
+  def step_simulation(self) -> None:
+    if self._is_paused:
+      return
+    super().step_simulation()
+    if self.angle_print_interval > 0:
+      self._angle_elapsed += self.env.unwrapped.step_dt
+      if self._angle_elapsed + 1e-9 >= self.angle_print_interval:
+        print_module_joint_angles(self.env.unwrapped)
+        periods = math.floor((self._angle_elapsed + 1e-9) / self.angle_print_interval)
+        self._angle_elapsed = max(
+          0.0, self._angle_elapsed - periods * self.angle_print_interval
+        )
+
+  def reset_environment(self) -> None:
+    super().reset_environment()
+    self._angle_elapsed = 0.0
+
 
 @dataclass(frozen=True)
 class KeyboardConfig:
@@ -132,6 +186,8 @@ class KeyboardConfig:
   """Target movement in meters per key press."""
   initial_distance: float = 0.6
   """Initial/recentered goal distance ahead of COM along the head's heading."""
+  angle_print_interval: float = 0.0
+  """Print all module angles every N simulated seconds; zero disables streaming."""
   device: str | None = None
 
 
@@ -144,6 +200,8 @@ def run_keyboard(cfg: KeyboardConfig) -> None:
       raise ValueError(f"{name} must be finite and greater than zero")
   if not cfg.checkpoint_file.is_file():
     raise FileNotFoundError(f"Checkpoint not found: {cfg.checkpoint_file}")
+  if not math.isfinite(cfg.angle_print_interval) or cfg.angle_print_interval < 0:
+    raise ValueError("angle_print_interval must be finite and non-negative")
 
   configure_torch_backends()
   device = cfg.device or ("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -163,10 +221,13 @@ def run_keyboard(cfg: KeyboardConfig) -> None:
       "Click the MuJoCo window to focus keyboard input.\n"
       f"W/S: target forward/back | A/D: target left/right | step: {cfg.goal_step:g} m\n"
       "Arrow keys: same directions | T: recenter target  | Enter: reset robot\n"
+      "J: print actual and target joint angles for all five modules (degrees)\n"
       "Space: pause/resume | Close the window to quit.\n"
       "Directions follow the head module's current heading on the ground."
     )
-    KeyboardGoalViewer(env, policy, cfg.goal_step, cfg.initial_distance).run()
+    KeyboardGoalViewer(
+      env, policy, cfg.goal_step, cfg.initial_distance, cfg.angle_print_interval
+    ).run()
   finally:
     raw_env.close()
 

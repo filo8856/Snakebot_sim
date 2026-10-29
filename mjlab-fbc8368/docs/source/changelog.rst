@@ -17,6 +17,9 @@ Upcoming version (not yet released)
 Added
 ^^^^^
 
+- Actual and commanded servo-angle reporting for all five Snakebot modules,
+  with a J-key snapshot and optional periodic terminal output in degrees.
+
 - Snakebot v2 keyboard demo with head-relative WASD/arrow target movement using a local
   trained checkpoint and persistent goals after arrival.
 
