@@ -17,6 +17,10 @@ Upcoming version (not yet released)
 Added
 ^^^^^
 
+- Live Snakebot MQTT mirror for head-relative keyboard simulation, with
+  timestamped commands for five ESP modules, configurable servo calibration,
+  request-matched MPU feedback logging, and a network-free dry-run mode.
+
 - Actual and commanded servo-angle reporting for all five Snakebot modules,
   with a J-key snapshot and optional periodic terminal output in degrees.
 

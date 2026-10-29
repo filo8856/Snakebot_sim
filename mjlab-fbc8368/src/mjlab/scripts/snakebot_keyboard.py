@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import torch
 import tyro
@@ -191,7 +191,10 @@ class KeyboardConfig:
   device: str | None = None
 
 
-def run_keyboard(cfg: KeyboardConfig) -> None:
+def run_keyboard(
+  cfg: KeyboardConfig,
+  viewer_factory: Callable[..., KeyboardGoalViewer] = KeyboardGoalViewer,
+) -> None:
   for name, value in (
     ("goal_step", cfg.goal_step),
     ("initial_distance", cfg.initial_distance),
@@ -225,7 +228,7 @@ def run_keyboard(cfg: KeyboardConfig) -> None:
       "Space: pause/resume | Close the window to quit.\n"
       "Directions follow the head module's current heading on the ground."
     )
-    KeyboardGoalViewer(
+    viewer_factory(
       env, policy, cfg.goal_step, cfg.initial_distance, cfg.angle_print_interval
     ).run()
   finally:

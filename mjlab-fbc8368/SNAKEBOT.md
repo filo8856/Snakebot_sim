@@ -305,6 +305,72 @@ No retraining is required for this demo. The existing evaluation covers
 fixed goals; tracking a repeatedly moving goal and holding position after
 arrival have not been trained or evaluated as separate behaviors.
 
+## Live MQTT hardware mirror
+
+`snakebot_mqtt` runs the same head-relative WASD simulation and sends its
+commanded servo targets to the physical robot using the supplied ESP sender's
+MQTT initialization, timestamped JSON messages, and request/feedback protocol.
+Run from the existing working `mjlab-fbc8368/` environment:
+
+```bash
+uv pip install -r requirements-hardware.txt
+uv run --no-sync python -m mjlab.scripts.snakebot_mqtt
+```
+
+The live command connects to `10.49.2.223:1883` and begins sending when the
+simulation starts. Click the MuJoCo window and use WASD/arrow keys as before.
+Space pauses/resumes new commands, J prints angles, and closing the window
+disconnects MQTT. To inspect the exact outgoing messages without connecting
+to any broker or moving hardware:
+
+```bash
+uv run --no-sync python -m mjlab.scripts.snakebot_mqtt --dry-run True
+```
+
+The default outgoing topic is `servos/sync_command`. Each payload contains
+`request_id`, Unix-millisecond `ts`, and a `data` dictionary containing
+`ESP_01` through `ESP_05`, mapped to simulation modules 1 through 5. Each pair
+is **[bottom servo, top servo]**, matching the old sender's [s2, s1] order.
+The pasted sender's active feedback function addressed only ESP_01; this
+bridge sends all five pairs while still awaiting feedback from ESP_01.
+
+Hardware angles are `90 + int(simulated_target_degrees)`, clamped to 65–115°,
+following the supplied sender's neutral position, truncation, and limits.
+The model's targets are already servo angles, so the old rolling-joint
+geometric conversion is not repeated. Actual simulated angles are not sent.
+The actor is updated at most 20 times per wall-clock second. The first command
+is scheduled 1 second ahead; subsequent commands use a fresh timestamp 0.05
+seconds ahead. The ESP clocks must use the same Unix time basis as the sender.
+
+Matching `request_id` feedback is expected on `servos/ESP_01/feedback` with
+`sensor_valid`, `roll`, `pitch`, `gx`, `gy`, and `gz`, as in the provided code.
+Only one command is outstanding. While waiting for feedback, the simulation
+does not advance its policy; rendering and WASD input remain responsive.
+Feedback slower than 20 Hz therefore slows the joint sequence rather than
+building a future-command queue. Valid feedback is saved to
+`logs/hardware/mpu_feedback.csv`. Missing feedback after 5 seconds, invalid
+sensor readings, disconnection, or an unstable simulation stops new commands
+and pauses the demo. Restart it after resolving the fault.
+
+Override the broker or reproduce the original single-module command:
+
+```bash
+uv run --no-sync python -m mjlab.scripts.snakebot_mqtt --broker 192.168.1.20
+uv run --no-sync python -m mjlab.scripts.snakebot_mqtt --module-ids "('ESP_01',)"
+```
+
+`--neutral-angles "(90,90)"` and `--servo-directions "(1,1)"` accept a shared
+bottom/top pair or ten values for individual servo calibration. Module IDs
+can also be replaced in order using `--module-ids`. To use firmware without
+request/feedback support, explicitly pass `--require-feedback False`.
+This disables the feedback handshake and its sensor/timeout checks.
+
+This mirrors simulated motion. MPU feedback is logged and used to acknowledge
+commands; it does not replace the simulation's state observations. WASD still
+uses the simulated head orientation. Pausing or disconnecting stops new
+publications; any already scheduled command may still execute, and servo
+holding behavior remains controlled by the ESP firmware.
+
 ## mjswan browser viewer
 
 Initialize the pinned fork first:
