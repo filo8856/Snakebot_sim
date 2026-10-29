@@ -371,6 +371,83 @@ uses the simulated head orientation. Pausing or disconnecting stops new
 publications; any already scheduled command may still execute, and servo
 holding behavior remains controlled by the ESP firmware.
 
+## IMU/model hybrid controller (separate version)
+
+The original `snakebot_mqtt` mirror remains available. The separate
+`snakebot_mpu_mqtt` version feeds IMU measurements from **all five physical
+modules** into the existing v2 actor while retaining simulated servo state,
+as required when the servos have no angle feedback.
+
+| Actor information | Source in this version |
+| --- | --- |
+| Module angular velocities | Five real module gyros, converted into the head frame |
+| Head orientation for goal direction and WASD | Measured head roll/pitch and reported or gyro-estimated yaw |
+| Servo angles and joint velocities, with history | Simulated model |
+| Robot COM position and module linear velocities | Simulated model |
+| Phase clock and previous actions | Controller/model |
+
+This is an **experimental hybrid**, not a measured physical-position
+controller. Without position tracking, the robot's distance to the target
+remains a model estimate. The simulation display also remains the model state;
+it does not reconstruct the physical robot's full pose from the IMUs.
+
+Run from the working environment, choosing gyro units to match the firmware:
+
+```bash
+# If gx/gy/gz are in degrees/second:
+uv run --no-sync python -m mjlab.scripts.snakebot_mpu_mqtt --gyro-units deg/s
+
+# If gx/gy/gz are already in radians/second:
+uv run --no-sync python -m mjlab.scripts.snakebot_mpu_mqtt --gyro-units rad/s
+
+# If gx/gy/gz are raw MPU counts (example: +/-250 deg/s range):
+uv run --no-sync python -m mjlab.scripts.snakebot_mpu_mqtt \
+  --gyro-units raw --raw-gyro-sensitivity 131
+```
+
+No gyro unit is assumed for live operation. The raw sensitivity must match
+the configured MPU full-scale range. Roll/pitch and optional yaw must be in
+degrees using a consistent XYZ roll/pitch/yaw and sensor-axis convention.
+
+Start with the physical robot matching the model's neutral pose. The script
+first sends a neutral servo hold to elicit IMU replies, then aligns each
+sensor orientation to its corresponding model module using the first complete
+feedback batch. This initial alignment assumes consistent IMU axis/yaw
+references across modules; verify the sensor mounting and firmware convention.
+Calibration is local to each run. If yaw is absent, the controller integrates
+gyro-derived yaw rate between feedback batches, which accumulates drift.
+
+The firmware on each ESP must publish to its own topic:
+`servos/ESP_01/feedback` through `servos/ESP_05/feedback`. Each reply must contain:
+
+```json
+{"request_id": 1, "sensor_valid": true, "roll": -7.7, "pitch": 6.06,
+ "gx": 0.1, "gy": 0.2, "gz": 0.3}
+```
+
+`request_id` must match the command sent to all five modules. An optional
+`yaw` field supplies heading directly instead of gyro integration. The next
+policy step waits for every module from the same request; missing, invalid,
+or stale data stops the stream rather than silently replacing a module with
+simulated IMU data. `--max-imu-age` defaults to 1 second. All raw module
+feedback is recorded to `logs/hardware/mpu_hybrid_all.jsonl`; the head summary
+is also saved to `logs/hardware/mpu_hybrid_head.csv`.
+
+WASD and arrows use the IMU-estimated head heading. T places the estimated
+target ahead of that heading. Space pauses/resumes; on resume, the controller
+holds the last servo targets to request fresh IMU readings. Gyro yaw integration
+does not extrapolate across a long pause, so motion during a pause cannot be
+recovered without reported yaw. Enter resets the model, not the physical robot.
+
+For a network-free demonstration of the hybrid code path:
+
+```bash
+uv run --no-sync python -m mjlab.scripts.snakebot_mpu_mqtt --dry-run True
+```
+
+Dry-run mode explicitly synthesizes IMU packets from the model. It exercises
+the adapter and RL inference without connecting to the broker or moving hardware.
+
 ## mjswan browser viewer
 
 Initialize the pinned fork first:

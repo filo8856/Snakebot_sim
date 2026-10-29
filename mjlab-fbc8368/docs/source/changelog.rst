@@ -17,6 +17,10 @@ Upcoming version (not yet released)
 Added
 ^^^^^
 
+- Separate experimental Snakebot IMU/model hybrid controller with five-module
+  request-matched feedback, calibrated gyro/orientation observations, model
+  servo-state estimates, and IMU-relative keyboard target control.
+
 - Live Snakebot MQTT mirror for head-relative keyboard simulation, with
   timestamped commands for five ESP modules, configurable servo calibration,
   request-matched MPU feedback logging, and a network-free dry-run mode.
