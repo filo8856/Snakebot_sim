@@ -17,6 +17,9 @@ Upcoming version (not yet released)
 Added
 ^^^^^
 
+- Snakebot v2 keyboard demo with head-relative WASD/arrow target movement using a local
+  trained checkpoint and persistent goals after arrival.
+
 - Cloud training support via `SkyPilot <https://skypilot.readthedocs.io/>`_
   and Lambda Cloud, with documentation covering setup, monitoring, and
   cost management.

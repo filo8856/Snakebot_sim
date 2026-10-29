@@ -251,6 +251,47 @@ MUJOCO_GL=egl uv run play Mjlab-Locomotion-Flat-Snakebot-v2 \
 Videos are written beneath the selected run in `videos/play/`. Close the viewer
 after the requested recording finishes.
 
+## Keyboard-controlled target
+
+Use the existing trained policy with an interactive target in the native
+MuJoCo viewer. From `mjlab-fbc8368/` in WSL/Linux with a graphical display:
+
+```bash
+uv run python -m mjlab.scripts.snakebot_keyboard
+```
+
+This defaults to the committed `checkpoints/snakebot_v2/model_1200.pt`.
+Click the viewer window to focus keyboard input.
+
+| Key | Action |
+| --- | --- |
+| W / Up | Move target forward along the head's heading by 0.10 m |
+| S / Down | Move target backward along the head's heading by 0.10 m |
+| A / Left | Move target left relative to the head by 0.10 m |
+| D / Right | Move target right relative to the head by 0.10 m |
+| T | Put the target 0.60 m ahead of COM along the head's heading |
+| Enter | Reset the robot and target |
+| Space | Pause/resume |
+
+Directions follow the head module's current heading, projected onto the
+ground plane, and do not rotate with the camera. Each key
+press moves the red target; the policy supplies the joint commands. The
+target remains where you put it after arrival, and the robot does not reset
+when it reaches the target or when you move it farther away. Instability
+and non-finite-state recovery remain enabled; a robot reset also resets
+the target.
+
+Change the step size or use another compatible v2 checkpoint:
+
+```bash
+uv run python -m mjlab.scripts.snakebot_keyboard --goal-step 0.2 \
+  --checkpoint-file checkpoints/snakebot_v2/model_800.pt
+```
+
+No retraining is required for this demo. The existing evaluation covers
+fixed goals; tracking a repeatedly moving goal and holding position after
+arrival have not been trained or evaluated as separate behaviors.
+
 ## mjswan browser viewer
 
 Initialize the pinned fork first:
