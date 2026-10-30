@@ -115,8 +115,9 @@ Added
 Changed
 ^^^^^^^
 
-- Removed queued Snakebot motion bursts and restored continuous commands,
-  waiting for all five ESP acknowledgements while retaining 3x angle scaling.
+- Restored optional timestamped Snakebot motion bursts via ``--burst-size``,
+  retaining continuous commands by default, 3x angle scaling, and all-five-ESP
+  acknowledgements.
 
 - Replaced the single ``scale`` parameter in ``DifferentialIKActionCfg`` with
   separate ``delta_pos_scale`` and ``delta_ori_scale`` for independent scaling

@@ -340,11 +340,11 @@ Use this launcher as the active command sender. Click the MuJoCo window:
 Each key press moves the target 0.10 m by default. The robot is initially
 sent a neutral hold (90°, 90° with the default calibration). Each outgoing
 message contains `request_id`, a future Unix-millisecond `ts`, and all five
-`ESP_01`–`ESP_05` angle pairs. Simulation mode sends one complete frame at a
+`ESP_01`–`ESP_05` angle pairs. By default, simulation mode sends one complete frame at a
 time, containing all ten servo angles. All five ESPs must acknowledge the
 initial neutral hold before the model starts advancing.
 
-The sender waits for matching acknowledgements and the configured publish
+In continuous mode, the sender waits for matching acknowledgements and the configured publish
 interval before advancing the model and sending the next frame. Actual update
 rate depends on simulation throughput, command scheduling, and network latency.
 WASD changes apply when the model next advances; no frames are buffered into
@@ -358,7 +358,22 @@ Defaults and tuning:
 uv run --no-sync python -m mjlab.scripts.snakebot_live --angle-scale 3
 # Original unscaled hardware angles.
 uv run --no-sync python -m mjlab.scripts.snakebot_live --angle-scale 1
+# Optional: record 100 complete frames and queue about five seconds of playback.
+uv run --no-sync python -m mjlab.scripts.snakebot_live --angle-scale 3 --burst-size 100
 ```
+
+Continuous streaming remains the default (`--burst-size 1`). For optional burst
+playback, each frame contains all ten servo angles. The model records the batch,
+then sends individually timestamped commands spaced 50 ms apart. The model waits
+for playback and acknowledgements from all five ESPs before recording again.
+Capture time depends on simulation throughput. Batch size is capped at 180 to
+stay within the firmware queue capacity.
+
+During burst playback, WASD changes affect the next batch. Space and closing the
+viewer stop future batches; they cannot cancel commands already queued on the
+ESPs. A 100-frame batch takes about five seconds to finish. Reset is unavailable
+while a batch is playing. Hybrid mode always uses continuous feedback.
+
 Simulation mode requires no MPU connection: `sensor_valid: false` is accepted
 as part of an otherwise correctly identified command acknowledgement. Every
 angle and policy observation comes from the simulation. Hybrid mode continues
