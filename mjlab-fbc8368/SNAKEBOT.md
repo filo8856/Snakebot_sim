@@ -476,6 +476,65 @@ neutral pose for alignment. Physical position remains unmeasured; the
 still apply. Existing `snakebot_keyboard`, `snakebot_mqtt`, and
 `snakebot_mpu_mqtt` entry points remain available.
 
+## Pipelined RL playback (separate version)
+
+The original continuous and sequential-burst launchers remain available. The
+new launcher prepares the next frames while the physical snake executes earlier
+ones:
+
+```bash
+cd ~/Snakebot_sim/mjlab-fbc8368
+uv run --no-sync python -m mjlab.scripts.snakebot_live_pipeline
+```
+
+Defaults are 3x angle scaling, a 100-frame startup prefill, 100 ms between
+physical angle sets, and the same whole-snake WASD/arrow controls. After prefill,
+the simulation runs ahead and feeds a rolling buffer instead of stopping every
+100 frames. A separate sender thread uploads ready frames at most once every
+10 ms while the model continues to capture. Execution timestamps continue
+across logical 100-frame batch boundaries.
+
+Only the viewer thread operates the model and GPU; the sender works with copied
+angle values. Capture runs as fast as available compute allows. Display updates
+are capped at 30 FPS by default. If capture falls behind physical playback, the
+sender logs a buffer underrun and schedules a fresh lead time; continuous motion
+cannot be guaranteed when the model produces fewer than ten frames/second at
+the default 100 ms spacing.
+
+No ESP firmware change is required. Because the supplied ESP command queue is
+FIFO, an execution ACK for request N confirms that earlier accepted queued
+commands on that module have been consumed. The sender uses the slowest of the
+five modules' execution progress to cap unconfirmed queued commands at 180,
+below the firmware's 199 usable entries. A later ACK can free queue capacity
+without pretending an earlier missing ACK was received. The existing
+10-consecutive-miss accounting remains in command order. Run only one command
+sender at a time; other senders' commands cannot be included in this bound.
+
+WASD affects frames not yet captured. Buffered and uploaded frames add steering
+latency. Space pauses future capture and uploads, while feedback is still
+processed. Already uploaded commands cannot be cancelled: as many as 180 frames
+may remain queued, so this can take longer than one 100-frame burst. To reset,
+pause and wait for queued commands/ACKs to drain. Closing stops the sender;
+commands already on ESPs still finish.
+
+Useful options:
+
+```bash
+# Explicit default playback settings.
+uv run --no-sync python -m mjlab.scripts.snakebot_live_pipeline --angle-scale 3 --burst-size 100 --burst-frame-interval 0.1
+# Smaller prefill and less captured lookahead for more responsive steering.
+uv run --no-sync python -m mjlab.scripts.snakebot_live_pipeline --burst-size 30 --pipeline-queue-limit 50
+# Bounded preview: no broker connection or physical commands.
+uv run --no-sync python -m mjlab.scripts.snakebot_live_pipeline --dry-run True --max-steps 220
+```
+
+`--pipeline-queue-limit` must be 1–180 and `--upload-interval` must be positive
+and shorter than the physical frame interval. Playback spacing uses whole
+milliseconds. Per-module feedback and ACK status are written to
+`logs/hardware/pipeline_all_modules.jsonl`, `pipeline_command_ack.csv`, and
+`pipeline_ack_status.csv`. This launcher uses simulation observations and does
+not support the experimental IMU-hybrid mode.
+
 ## Viewer performance on WSL
 
 The keyboard and both live launchers automatically select WSLg's D3D12 hardware

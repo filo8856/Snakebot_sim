@@ -17,6 +17,11 @@ Upcoming version (not yet released)
 Added
 ^^^^^
 
+- Separate ``snakebot_live_pipeline`` launcher that captures future policy
+  frames while queued hardware motion plays. Paced background uploads use
+  per-ESP execution progress to bound queue occupancy, retain ordered ACK-miss
+  handling, and keep physical timestamps continuous across batch boundaries.
+
 - Separate ``snakebot_live_burst`` launcher with 100-frame batches and 3x angle
   scaling, alongside the continuous ``snakebot_live`` launcher.
 
