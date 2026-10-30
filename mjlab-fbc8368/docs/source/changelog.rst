@@ -17,6 +17,10 @@ Upcoming version (not yet released)
 Added
 ^^^^^
 
+- Five-module live Snakebot launcher matched to the supplied ESP firmware,
+  using the confirmed broker, simulation/hybrid modes, and acknowledgement
+  checks for every module's ID and command timestamp.
+
 - Separate experimental Snakebot IMU/model hybrid controller with five-module
   request-matched feedback, calibrated gyro/orientation observations, model
   servo-state estimates, and IMU-relative keyboard target control.

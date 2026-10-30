@@ -194,6 +194,8 @@ class KeyboardConfig:
 def run_keyboard(
   cfg: KeyboardConfig,
   viewer_factory: Callable[..., KeyboardGoalViewer] = KeyboardGoalViewer,
+  *,
+  num_steps: int | None = None,
 ) -> None:
   for name, value in (
     ("goal_step", cfg.goal_step),
@@ -230,7 +232,7 @@ def run_keyboard(
     )
     viewer_factory(
       env, policy, cfg.goal_step, cfg.initial_distance, cfg.angle_print_interval
-    ).run()
+    ).run(num_steps=num_steps)
   finally:
     raw_env.close()
 

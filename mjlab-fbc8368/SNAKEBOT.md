@@ -9,6 +9,9 @@ This is the authoritative guide for the current Snakebot policy in this reposito
 
 ## Current task
 
+For the physical five-module robot, use the
+[live-system launcher](#five-module-live-system-uploaded-esp-firmware).
+
 - Task ID: `Mjlab-Locomotion-Flat-Snakebot-v2`
 - Experiment directory: `snakebot_locomotion_v2/`
 - Purpose: navigate to COM-relative XY goals
@@ -304,6 +307,89 @@ uv run python -m mjlab.scripts.snakebot_keyboard --goal-step 0.2 \
 No retraining is required for this demo. The existing evaluation covers
 fixed goals; tracking a repeatedly moving goal and holding position after
 arrival have not been trained or evaluated as separate behaviors.
+
+## Five-module live system (uploaded ESP firmware)
+
+This launcher matches the supplied ESP32 `main.cpp` and the confirmed broker
+at **10.220.249.223:1883**. It runs the v2 policy in MuJoCo, lets WASD move
+the target relative to the head, and sends the resulting ten servo targets
+to the real robot. The uploaded ESP firmware can remain installed.
+
+From the existing working WSL environment:
+
+```bash
+cd ~/Snakebot_sim/mjlab-fbc8368
+uv pip install -r requirements-hardware.txt
+uv run --no-sync python -m mjlab.scripts.snakebot_live
+```
+
+Use this launcher as the active command sender. Click the MuJoCo window:
+
+| Input | Effect |
+| --- | --- |
+| W / Up | Move target forward relative to the model's head |
+| S / Down | Move target backward |
+| A / Left | Move target left |
+| D / Right | Move target right |
+| Space | Pause/resume new servo commands |
+| J | Print actual model angles and commanded targets in degrees |
+| T | Place target ahead of the head |
+| Enter | Reset the simulation |
+| Close window | Exit and disconnect MQTT |
+
+Each key press moves the target 0.10 m by default. The robot is initially
+sent a neutral hold (90°, 90° with the default calibration). Each outgoing
+message contains `request_id`, a future Unix-millisecond `ts`, and all five
+`ESP_01`–`ESP_05` angle pairs. The next policy step waits for all five valid
+feedback replies matching both the request ID and command timestamp.
+Terminal output confirms when all five ESPs have acknowledged a command.
+Missing feedback identifies the missing module and pauses the stream.
+
+The first model module (head) maps to ESP_01 and the tail maps to ESP_05.
+The first angle is the bottom servo / GPIO32, and the second is the top
+servo / GPIO33, following the supplied Python sender's `[s2, s1]` order.
+Each model joint target becomes `90 + int(target_degrees)`, within the
+existing 65–115° range. Servo offsets/directions can be calibrated using
+the launcher options. Reorder the five `--module-ids` if the physical
+head-to-tail numbering differs.
+
+The supplied firmware publishes roll/pitch in degrees and bias-corrected
+`gx`, `gy`, `gz` in **degrees/second**, so the launcher has that unit configured.
+Each ESP must have its own `THIS_ESP_ID` and publish `esp_id`, `request_id`,
+`command_ts`, `sensor_valid`, `roll`, `pitch`, `gx`, `gy`, and `gz` on
+`servos/<ESP_ID>/feedback`. MCU feedback is captured immediately after
+`servo.write()`; it acknowledges issuing the command, not measured servo
+position or completion of the mechanical movement. Feedback is logged to
+`logs/hardware/live_all_modules.jsonl` and `logs/hardware/live_head.csv`.
+
+The old Python sender points to 10.49.2.223 and its active feedback function
+addresses only ESP_01. This launcher uses the confirmed firmware address and
+addresses all five modules. Both the laptop and ESPs must share the broker
+and Unix time basis used by the firmware's NTP scheduling. If all five modules
+time out, check their MQTT and time-sync messages on Serial rather than assuming
+the queued timestamp has already executed.
+
+Preview without a broker connection or hardware commands:
+
+```bash
+uv run --no-sync python -m mjlab.scripts.snakebot_live --dry-run True
+# Optional bounded preview: eight policy steps, then close/disconnect.
+uv run --no-sync python -m mjlab.scripts.snakebot_live --dry-run True --max-steps 8
+```
+
+The default `--mode simulation` mirrors the simulation and logs all physical
+IMUs. To feed those IMUs into the RL actor while still using model servo and
+position estimates, select the separate hybrid behavior:
+
+```bash
+uv run --no-sync python -m mjlab.scripts.snakebot_live --mode imu-hybrid
+```
+
+In hybrid mode, WASD uses IMU-estimated head orientation. Begin in the model's
+neutral pose for alignment. Physical position remains unmeasured; the
+[hybrid limitations and data sources](#imumodel-hybrid-controller-separate-version)
+still apply. Existing `snakebot_keyboard`, `snakebot_mqtt`, and
+`snakebot_mpu_mqtt` entry points remain available.
 
 ## Live MQTT hardware mirror
 
