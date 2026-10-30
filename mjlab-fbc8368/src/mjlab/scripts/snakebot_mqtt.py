@@ -38,6 +38,8 @@ class MqttKeyboardConfig(KeyboardConfig):
   """Bottom/top signs (+1/-1): one shared pair or a pair per module."""
   servo_min: int = 65
   servo_max: int = 115
+  angle_scale: float = 1.0
+  """Multiplier applied to joint-angle offsets before adding servo neutral."""
   publish_interval: float = 0.05
   """Minimum wall-clock spacing. The policy itself runs at 20 Hz."""
   initial_delay: float = 1.0
@@ -73,6 +75,8 @@ def validate_mqtt_config(cfg: MqttKeyboardConfig) -> None:
     raise ValueError("Command and feedback topics must not be empty")
   if not 0 <= cfg.servo_min < cfg.servo_max <= 180:
     raise ValueError("Servo limits must satisfy 0 <= min < max <= 180")
+  if not math.isfinite(cfg.angle_scale) or cfg.angle_scale <= 0:
+    raise ValueError("angle_scale must be finite and greater than zero")
   neutrals = _expand_pairs(cfg.neutral_angles, len(cfg.module_ids), "neutral_angles")
   signs = _expand_pairs(cfg.servo_directions, len(cfg.module_ids), "servo_directions")
   if any(not cfg.servo_min <= angle <= cfg.servo_max for angle in neutrals):
@@ -100,7 +104,9 @@ def servo_payload_data(
   data = {}
   for module, module_id in enumerate(cfg.module_ids):
     pair = targets_deg[module]
-    if len(pair) != 2 or any(not math.isfinite(angle) for angle in pair):
+    if len(pair) != 2 or any(
+      not math.isfinite(angle * cfg.angle_scale) for angle in pair
+    ):
       raise ValueError(f"Invalid bottom/top servo targets for {module_id}")
     # The old gait sender uses 90-int(angle), then sends [vertical, horizontal].
     # MJCF targets already equal -angle in bottom/top order: do not apply the
@@ -110,7 +116,8 @@ def servo_payload_data(
         cfg.servo_max,
         max(
           cfg.servo_min,
-          neutrals[2 * module + joint] + int(signs[2 * module + joint] * angle),
+          neutrals[2 * module + joint]
+          + int(signs[2 * module + joint] * angle * cfg.angle_scale),
         ),
       )
       for joint, angle in enumerate(pair)

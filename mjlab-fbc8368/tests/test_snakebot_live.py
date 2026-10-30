@@ -93,7 +93,7 @@ def test_uploaded_firmware_contract_all_five_modules(tmp_path):
 
     # Simulation bottom/top targets map to the same [s2, s1] servo order as Python.
     command = bridge.send([[5.16, -5.16]] * 5)
-    assert all(pair == [95, 85] for pair in command["data"].values())
+    assert all(pair == [105, 75] for pair in command["data"].values())
     assert command["request_id"] == 2
     assert command["ts"] > parsed["ts"]
   finally:
@@ -185,7 +185,7 @@ def test_simulation_streams_without_any_connected_mpu(tmp_path):
     assert all(row["feedback"]["sensor_valid"] is False for row in records)
     assert not bridge.cfg.feedback_csv.exists()  # No fake valid IMU CSV.
     second = bridge.send([[5.16, -5.16]] * 5)
-    assert all(pair == [95, 85] for pair in second["data"].values())
+    assert all(pair == [105, 75] for pair in second["data"].values())
     assert client.publish.call_count == 2
   finally:
     bridge.close()

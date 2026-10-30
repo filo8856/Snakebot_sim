@@ -340,8 +340,40 @@ Use this launcher as the active command sender. Click the MuJoCo window:
 Each key press moves the target 0.10 m by default. The robot is initially
 sent a neutral hold (90°, 90° with the default calibration). Each outgoing
 message contains `request_id`, a future Unix-millisecond `ts`, and all five
-`ESP_01`–`ESP_05` angle pairs. The next policy step waits for all five valid
-command acknowledgements matching both the request ID and command timestamp.
+`ESP_01`–`ESP_05` angle pairs. Simulation mode now records and uploads bursts
+of **100 complete frames**, with ten servo angles in each frame. That is
+1,000 individual servo-angle values per burst. All five ESPs must acknowledge
+the initial neutral hold before recording starts.
+
+During recording the model runs normally and WASD affects the captured
+trajectory; the physical robot holds its previous targets. Once 100 frames
+are collected, the sender uploads 100 standard firmware-compatible MQTT
+messages in a short burst. Their timestamps are 50 ms apart, giving about
+five seconds of physical playback at 20 Hz. This removes per-frame network
+round-trip delays from the playback timing. The sender waits for playback
+and matching acknowledgements before starting the next batch. Capture time
+depends on simulation throughput and can exceed five wall-clock seconds.
+
+The 200-slot ESP queue has 199 usable entries; burst size is limited to 180,
+and only one burst is outstanding. Feedback deadlines are measured from each
+frame's scheduled execution time, not from the upload time.
+
+**WASD changes during playback affect the next batch. Space prevents future
+bursts; it cannot cancel a burst already queued on the ESPs. Closing the viewer
+also leaves already queued frames to finish.** The supplied firmware has no
+queue-cancel command. Reset is unavailable during queued playback. Partial
+unsent buffers are discarded on reset, simulation instability, or window close.
+
+Defaults and tuning:
+
+```bash
+# Default: 3x hardware angle offsets, 100 frames per burst.
+uv run --no-sync python -m mjlab.scripts.snakebot_live --angle-scale 3 --burst-size 100
+# Smaller batches reduce recording and control latency.
+uv run --no-sync python -m mjlab.scripts.snakebot_live --angle-scale 3 --burst-size 20
+# Original continuous, unscaled behavior.
+uv run --no-sync python -m mjlab.scripts.snakebot_live --angle-scale 1 --burst-size 1
+```
 Simulation mode requires no MPU connection: `sensor_valid: false` is accepted
 as part of an otherwise correctly identified command acknowledgement. Every
 angle and policy observation comes from the simulation. Hybrid mode continues
@@ -351,8 +383,12 @@ Missing feedback identifies the missing module and pauses the stream.
 The first model module (head) maps to ESP_01 and the tail maps to ESP_05.
 The first angle is the bottom servo / GPIO32, and the second is the top
 servo / GPIO33, following the supplied Python sender's `[s2, s1]` order.
-Each model joint target becomes `90 + int(target_degrees)`, within the
-existing 65–115° range. Servo offsets/directions can be calibrated using
+Each model joint target becomes `90 + int(target_degrees * angle_scale)`,
+within the existing 65–115° range. The default **3x** gain changes the policy's
+roughly +/-5.16° targets to approximately +/-15.48° (integer hardware commands
+usually 75–105°). Neutral stays 90°. Scaling is applied only to hardware
+commands; it does not change the trained policy or model action scale.
+Servo offsets/directions can be calibrated using
 the launcher options. Reorder the five `--module-ids` if the physical
 head-to-tail numbering differs.
 
@@ -382,7 +418,7 @@ uv run --no-sync python -m mjlab.scripts.snakebot_live --dry-run True
 uv run --no-sync python -m mjlab.scripts.snakebot_live --dry-run True --max-steps 8
 ```
 
-The default `--mode simulation` mirrors the simulation and logs all physical
+The default `--mode simulation` mirrors the simulation in batches and logs all physical
 IMUs. To feed those IMUs into the RL actor while still using model servo and
 position estimates, select the separate hybrid behavior:
 
@@ -390,7 +426,10 @@ position estimates, select the separate hybrid behavior:
 uv run --no-sync python -m mjlab.scripts.snakebot_live --mode imu-hybrid
 ```
 
-In hybrid mode, WASD uses IMU-estimated head orientation. Begin in the model's
+Hybrid mode retains continuous per-frame feedback, regardless of burst size,
+because its policy needs current IMU measurements. The configurable hardware
+angle scale also applies in hybrid mode. In hybrid mode, WASD uses IMU-estimated
+head orientation. Begin in the model's
 neutral pose for alignment. Physical position remains unmeasured; the
 [hybrid limitations and data sources](#imumodel-hybrid-controller-separate-version)
 still apply. Existing `snakebot_keyboard`, `snakebot_mqtt`, and

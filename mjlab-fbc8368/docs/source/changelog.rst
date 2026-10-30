@@ -17,6 +17,10 @@ Upcoming version (not yet released)
 Added
 ^^^^^
 
+- Configurable hardware angle scaling (3x by default in the live launcher)
+  and 100-frame simulation bursts with timestamped 20 Hz ESP playback,
+  per-frame feedback deadlines, and bounded queue usage.
+
 - Simulation-to-real mode supports ESPs without connected MPUs while retaining
   five-module command acknowledgements; hybrid mode still requires valid IMUs.
 
