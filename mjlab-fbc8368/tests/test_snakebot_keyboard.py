@@ -1,6 +1,7 @@
 """Keyboard goal routing and real-policy compatibility."""
 
 import math
+import os
 from dataclasses import asdict
 from types import SimpleNamespace
 from typing import Any, cast
@@ -14,6 +15,7 @@ from mjlab.rl import RslRlVecEnvWrapper
 from mjlab.scripts.snakebot_keyboard import (
   DEFAULT_CHECKPOINT,
   KeyboardGoalViewer,
+  configure_wsl_gpu_rendering,
   head_planar_axes,
   keyboard_env_cfg,
   module_joint_angles_deg,
@@ -23,6 +25,44 @@ from mjlab.scripts.snakebot_keyboard import (
 from mjlab.tasks.locomotion.config.snakebot_v2.env_cfg import _robot_com_xy
 from mjlab.tasks.velocity.rl import VelocityOnPolicyRunner
 from mjlab.viewer import NativeMujocoViewer
+
+
+def test_wsl_rendering_selects_gpu_before_context_creation(monkeypatch):
+  for name in (
+    "GALLIUM_DRIVER",
+    "LIBGL_ALWAYS_SOFTWARE",
+    "MESA_LOADER_DRIVER_OVERRIDE",
+    "MESA_D3D12_DEFAULT_ADAPTER_NAME",
+  ):
+    monkeypatch.delenv(name, raising=False)
+  monkeypatch.setattr("pathlib.Path.exists", lambda _: True)
+  monkeypatch.setattr("pathlib.Path.is_file", lambda _: True)
+  monkeypatch.setattr(torch.cuda, "get_device_name", lambda _: "NVIDIA RTX 3050")
+  assert configure_wsl_gpu_rendering("cuda:0")
+  assert os.environ["GALLIUM_DRIVER"] == "d3d12"
+  assert os.environ["MESA_D3D12_DEFAULT_ADAPTER_NAME"] == "NVIDIA RTX 3050"
+  # Restore environment changes made by the helper after this test.
+  os.environ.pop("GALLIUM_DRIVER")
+  os.environ.pop("MESA_D3D12_DEFAULT_ADAPTER_NAME")
+
+
+@pytest.mark.parametrize(
+  "override", ["GALLIUM_DRIVER", "LIBGL_ALWAYS_SOFTWARE", "MESA_LOADER_DRIVER_OVERRIDE"]
+)
+def test_wsl_rendering_respects_explicit_driver_choices(monkeypatch, override):
+  monkeypatch.setattr("pathlib.Path.exists", lambda _: True)
+  monkeypatch.setattr("pathlib.Path.is_file", lambda _: True)
+  monkeypatch.setenv(override, "existing-choice")
+  assert not configure_wsl_gpu_rendering("cuda:0")
+  assert os.environ[override] == "existing-choice"
+
+
+def test_wsl_rendering_leaves_cpu_and_other_platforms_alone(monkeypatch):
+  monkeypatch.delenv("GALLIUM_DRIVER", raising=False)
+  assert not configure_wsl_gpu_rendering("cpu")
+  monkeypatch.setattr("pathlib.Path.exists", lambda _: False)
+  assert not configure_wsl_gpu_rendering("cuda:0")
+  assert "GALLIUM_DRIVER" not in os.environ
 
 
 def make_angle_reporting_env():

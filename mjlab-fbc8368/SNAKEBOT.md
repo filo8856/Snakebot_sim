@@ -453,6 +453,27 @@ neutral pose for alignment. Physical position remains unmeasured; the
 still apply. Existing `snakebot_keyboard`, `snakebot_mqtt`, and
 `snakebot_mpu_mqtt` entry points remain available.
 
+## Viewer performance on WSL
+
+The keyboard and both live launchers automatically select WSLg's D3D12 hardware
+renderer on the CUDA GPU. CUDA physics and OpenGL rendering are separate: the
+simulation can use the RTX GPU while the viewer falls back to CPU rendering
+through Mesa llvmpipe. The launcher prints its D3D12 adapter selection at startup.
+Existing launch commands work without additional environment variables.
+
+On this RTX 3050 laptop, a bounded 30-step viewer benchmark improved from about
+4.4 FPS with llvmpipe to 22.7 FPS with D3D12. This measures display updates,
+not physical command frequency; actual rates depend on load and hardware waits.
+Physics timestep, solver settings, policy observations, angle scaling, and
+servo command timing are unchanged. Hardware playback with 100 ms frame spacing
+still executes ten angle sets per second, regardless of display FPS.
+
+The selection applies only inside the launcher process on WSL with its D3D12
+runtime present. Explicit `GALLIUM_DRIVER`, `LIBGL_ALWAYS_SOFTWARE`, and
+`MESA_LOADER_DRIVER_OVERRIDE` settings are respected. Use `--gpu-rendering False`
+to disable the automatic selection if necessary. No global driver settings are
+modified.
+
 ## Live MQTT hardware mirror
 
 `snakebot_mqtt` runs the same head-relative WASD simulation and sends its

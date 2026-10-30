@@ -138,6 +138,10 @@ Changed
 Fixed
 ^^^^^
 
+- Snakebot keyboard/live viewers now select WSLg D3D12 GPU rendering instead
+  of silently using CPU llvmpipe, while respecting explicit renderer overrides.
+  Physics, policy behavior, and hardware command timing are unchanged.
+
 - Fixed viewer physics loop starving the renderer by replacing the single
   sim-time budget with a two-clock design (tracked vs actual sim time).
   Physics now self-corrects after overshooting, keeping FPS smooth at all

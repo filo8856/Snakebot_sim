@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -29,6 +30,35 @@ from mjlab.viewer.base import ViewerAction
 DEFAULT_CHECKPOINT = (
   Path(__file__).resolve().parents[3] / "checkpoints/snakebot_v2/model_1200.pt"
 )
+
+
+def configure_wsl_gpu_rendering(device: str) -> bool:
+  """Select WSLg's hardware renderer before the first OpenGL context is made.
+
+  CUDA physics can work while Mesa silently renders through llvmpipe on CPU.
+  Limit this workaround to WSL with its D3D12 runtime and respect explicit
+  driver/software-rendering choices. No system or shell settings are changed.
+  """
+  if (
+    not device.startswith("cuda")
+    or not Path("/dev/dxg").exists()
+    or not Path("/usr/lib/wsl/lib/libd3d12.so").is_file()
+    or any(
+      name in os.environ
+      for name in (
+        "GALLIUM_DRIVER",
+        "LIBGL_ALWAYS_SOFTWARE",
+        "MESA_LOADER_DRIVER_OVERRIDE",
+      )
+    )
+  ):
+    return False
+  os.environ["GALLIUM_DRIVER"] = "d3d12"
+  adapter = os.environ.setdefault(
+    "MESA_D3D12_DEFAULT_ADAPTER_NAME", torch.cuda.get_device_name(device)
+  )
+  print(f"WSLg hardware rendering: D3D12 on {adapter}")
+  return True
 
 
 def head_planar_axes(env) -> tuple[torch.Tensor, torch.Tensor]:
@@ -189,6 +219,8 @@ class KeyboardConfig:
   angle_print_interval: float = 0.0
   """Print all module angles every N simulated seconds; zero disables streaming."""
   device: str | None = None
+  gpu_rendering: bool = True
+  """Select hardware OpenGL rendering on WSLg when CUDA is used."""
 
 
 def run_keyboard(
@@ -210,6 +242,8 @@ def run_keyboard(
 
   configure_torch_backends()
   device = cfg.device or ("cuda:0" if torch.cuda.is_available() else "cpu")
+  if cfg.gpu_rendering:
+    configure_wsl_gpu_rendering(device)
   agent_cfg = snakebot_locomotion_v2_ppo_cfg()
   raw_env = ManagerBasedRlEnv(keyboard_env_cfg(cfg.initial_distance), device=device)
   try:
