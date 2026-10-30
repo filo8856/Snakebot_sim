@@ -340,12 +340,12 @@ Use this launcher as the active command sender. Click the MuJoCo window:
 Each key press moves the target 0.10 m by default. The robot is initially
 sent a neutral hold (90°, 90° with the default calibration). Each outgoing
 message contains `request_id`, a future Unix-millisecond `ts`, and all five
-`ESP_01`–`ESP_05` angle pairs. By default, simulation mode sends one complete frame at a
-time, containing all ten servo angles. All five ESPs must acknowledge the
+`ESP_01`–`ESP_05` angle pairs. By default, simulation mode sends one complete
+frame at a time, containing all ten servo angles. All five ESPs must acknowledge the
 initial neutral hold before the model starts advancing.
 
-In continuous mode, the sender waits for matching acknowledgements and the configured publish
-interval before advancing the model and sending the next frame. Actual update
+In continuous mode, the sender waits for matching acknowledgements and the
+configured publish interval before advancing the model and sending the next frame. Actual update
 rate depends on simulation throughput, command scheduling, and network latency.
 WASD changes apply when the model next advances; no frames are buffered into
 batches. Space pauses new commands, and closing the viewer disconnects MQTT.
@@ -358,9 +358,14 @@ Defaults and tuning:
 uv run --no-sync python -m mjlab.scripts.snakebot_live --angle-scale 3
 # Original unscaled hardware angles.
 uv run --no-sync python -m mjlab.scripts.snakebot_live --angle-scale 1
-# Optional: record 100 complete frames and queue about five seconds of playback.
-uv run --no-sync python -m mjlab.scripts.snakebot_live --angle-scale 3 --burst-size 100
+# Separate burst version: 3x scaling and 100 frames (about five seconds).
+uv run --no-sync python -m mjlab.scripts.snakebot_live_burst
 ```
+
+Both launchers are kept: `snakebot_live` defaults to continuous streaming, and
+`snakebot_live_burst` defaults to 100-frame batches. They share the same policy,
+servo calibration, MQTT protocol, and acknowledgement checks. Start one sender
+at a time.
 
 Continuous streaming remains the default (`--burst-size 1`). For optional burst
 playback, each frame contains all ten servo angles. The model records the batch,

@@ -13,6 +13,7 @@ import torch
 from mjlab.scripts.snakebot_burst import BurstGoalViewer, BurstMqttBridge
 from mjlab.scripts.snakebot_keyboard import KeyboardGoalViewer
 from mjlab.scripts.snakebot_live import LiveSnakebotConfig
+from mjlab.scripts.snakebot_live_burst import BurstSnakebotConfig
 from mjlab.scripts.snakebot_mqtt import servo_payload_data
 
 
@@ -67,6 +68,8 @@ def acknowledge(bridge, payload, modules=None, **overrides):
 def test_scale_changes_offsets_without_scaling_neutral_and_keeps_limits():
   cfg = LiveSnakebotConfig()
   assert cfg.angle_scale == 3 and cfg.burst_size == 1
+  burst_cfg = BurstSnakebotConfig()
+  assert burst_cfg.angle_scale == 3 and burst_cfg.burst_size == 100
   assert servo_payload_data([[5.16, -5.16]] * 5, cfg)["ESP_01"] == [105, 75]
   assert servo_payload_data([[0.0, 0.0]] * 5, cfg)["ESP_01"] == [90, 90]
   calibrated = replace(cfg, neutral_angles=(100, 80))

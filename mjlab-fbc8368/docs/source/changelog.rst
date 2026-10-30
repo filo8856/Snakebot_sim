@@ -17,6 +17,9 @@ Upcoming version (not yet released)
 Added
 ^^^^^
 
+- Separate ``snakebot_live_burst`` launcher with 100-frame batches and 3x angle
+  scaling, alongside the continuous ``snakebot_live`` launcher.
+
 - Configurable hardware angle scaling (3x by default in the live launcher),
   with existing servo limits and neutral calibration preserved.
 
