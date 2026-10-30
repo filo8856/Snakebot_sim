@@ -16,10 +16,10 @@ from mjlab.scripts.snakebot_keyboard import (
   DEFAULT_CHECKPOINT,
   KeyboardGoalViewer,
   configure_wsl_gpu_rendering,
-  head_planar_axes,
   keyboard_env_cfg,
   module_joint_angles_deg,
   reset_keyboard_goal,
+  snake_planar_axes,
   snakebot_locomotion_v2_ppo_cfg,
 )
 from mjlab.tasks.locomotion.config.snakebot_v2.env_cfg import _robot_com_xy
@@ -80,6 +80,14 @@ def make_angle_reporting_env():
   return SimpleNamespace(scene={"robot": robot}, step_dt=0.05)
 
 
+def set_module_body_heading(robot, heading: float) -> None:
+  robot.body_names = [f"m{i}_bottom-base-plate-v1" for i in range(1, 6)]
+  direction = torch.tensor([math.cos(heading), math.sin(heading), 0.0])
+  robot.data.body_link_pos_w = (
+    torch.tensor([0.4, 0.2, 0.0, -0.2, -0.4])[:, None] * direction
+  )[None]
+
+
 def test_joint_angle_reporting_maps_named_joints_and_converts_to_degrees(capsys):
   raw = make_angle_reporting_env()
   expected = torch.tensor(
@@ -134,7 +142,10 @@ def test_key_events_are_queued_and_goal_edits_reset_progress():
     ),
     indexing=SimpleNamespace(body_ids=[0]),
   )
-  raw = SimpleNamespace(num_envs=1, device="cpu", scene={"robot": robot})
+  set_module_body_heading(robot, 0.0)
+  raw = SimpleNamespace(
+    num_envs=1, device="cpu", scene={"robot": robot}, sim=MagicMock()
+  )
   reset_keyboard_goal(raw, None, 0.6)
   env = MagicMock()
   env.unwrapped = raw
@@ -164,19 +175,20 @@ def test_key_events_are_queued_and_goal_edits_reset_progress():
 
 
 @pytest.mark.parametrize("heading", [0.0, math.pi / 2, math.pi, -math.pi / 2])
-def test_target_motion_tracks_head_heading(heading):
-  # Rz(heading) * Ry(pi/2): local +Z follows the desired ground heading.
-  c, s = math.cos(heading / 2) * 2**-0.5, math.sin(heading / 2) * 2**-0.5
+def test_target_motion_tracks_whole_body_heading(heading):
   raw = SimpleNamespace(
     scene={
       "robot": SimpleNamespace(
-        data=SimpleNamespace(root_link_quat_w=torch.tensor([[c, -s, c, s]]))
+        # Head plate +Z stays vertical; it must not choose the movement axes.
+        data=SimpleNamespace(root_link_quat_w=torch.tensor([[1.0, 0.0, 0.0, 0.0]]))
       )
     },
     _loco_goal_pos=torch.zeros(1, 2),
     _loco_prev_dist=torch.zeros(1),
+    sim=MagicMock(),
   )
   robot = raw.scene["robot"]
+  set_module_body_heading(robot, heading)
   robot.data.body_com_pos_w = torch.zeros(1, 1, 3)
   robot.data.model = SimpleNamespace(body_mass=torch.ones(1, 1))
   robot.indexing = SimpleNamespace(body_ids=[0])
@@ -195,8 +207,16 @@ def test_target_motion_tracks_head_heading(heading):
   viewer._process_actions()
   torch.testing.assert_close(raw._loco_goal_pos, forward * 0.6, atol=1e-6, rtol=1e-5)
 
-  # Changing the heading after construction changes the next command.
+  # Turning only the head plate must not rotate the target axes.
   robot.data.root_link_quat_w[:] = torch.tensor([[0.5, -0.5, 0.5, 0.5]])
+  before = raw._loco_goal_pos.clone()
+  viewer._safe_key_callback(ord("W"))
+  viewer._process_actions()
+  torch.testing.assert_close(
+    raw._loco_goal_pos - before, forward * 0.1, atol=1e-6, rtol=1e-5
+  )
+  # Turning the whole body changes the next command.
+  set_module_body_heading(robot, math.pi / 2)
   before = raw._loco_goal_pos.clone()
   viewer._safe_key_callback(ord("W"))
   viewer._process_actions()
@@ -205,20 +225,29 @@ def test_target_motion_tracks_head_heading(heading):
   )
 
 
-@pytest.mark.parametrize("tilt", [math.pi / 4, 0.0])
-def test_head_axes_stay_horizontal_and_normalized(tilt):
+@pytest.mark.parametrize(
+  "positions",
+  [
+    [[2, 0, 3], [1, 2, 2], [0, -2, 1], [-1, 1, 0], [-2, 0, -1]],
+    # Overlapping endpoints use the ordered fit through the middle modules.
+    [[0, 0, 0], [1, 0, 0], [0, 2, 0], [-1, 0, 0], [0, 0, 0]],
+    [[0, 0, i] for i in range(5)],  # No XY axis: finite world +X fallback.
+  ],
+)
+def test_body_axes_stay_horizontal_on_bent_or_vertical_snakes(positions):
+  names = [f"m{i}_bottom-base-plate-v1" for i in range(1, 6)]
   raw = SimpleNamespace(
     scene={
       "robot": SimpleNamespace(
+        # Reverse storage order to check that modules are selected by name.
+        body_names=list(reversed(names)),
         data=SimpleNamespace(
-          root_link_quat_w=torch.tensor(
-            [[math.cos(tilt / 2), 0.0, math.sin(tilt / 2), 0.0]]
-          )
-        )
+          body_link_pos_w=torch.tensor([list(reversed(positions))], dtype=torch.float32)
+        ),
       )
     }
   )
-  forward, left = head_planar_axes(raw)
+  forward, left = snake_planar_axes(raw)
   torch.testing.assert_close(forward, torch.tensor([[1.0, 0.0]]))
   torch.testing.assert_close(left, torch.tensor([[0.0, 1.0]]))
 
@@ -249,6 +278,11 @@ def test_committed_policy_follows_edited_goal_without_arrival_reset():
       map_location=device,
     )
     policy = runner.get_inference_policy(device=device)
+    initial_forward, _ = snake_planar_axes(raw)
+    torch.testing.assert_close(
+      cast(Any, raw)._loco_goal_pos - _robot_com_xy(raw.scene["robot"]),
+      initial_forward * 0.6,
+    )
     viewer = KeyboardGoalViewer(env, policy)
     viewer._safe_key_callback(ord("W"))
     viewer._process_actions()
@@ -275,5 +309,11 @@ def test_committed_policy_follows_edited_goal_without_arrival_reset():
       _, _, dones, _ = env.step(policy(env.get_observations()))
       assert not dones.any()
       torch.testing.assert_close(goal_pos, reached_goal)
+      env.reset()
+      reset_forward, _ = snake_planar_axes(raw)
+      torch.testing.assert_close(
+        cast(Any, raw)._loco_goal_pos - _robot_com_xy(raw.scene["robot"]),
+        reset_forward * 0.6,
+      )
   finally:
     raw.close()

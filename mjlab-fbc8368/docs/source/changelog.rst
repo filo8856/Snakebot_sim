@@ -118,6 +118,10 @@ Added
 Changed
 ^^^^^^^
 
+- Snakebot simulation-based WASD/arrow controls and target recentering now use
+  the whole snake's projected tail-to-head axis instead of the head plate's
+  orientation, including both continuous and burst live launchers.
+
 - Live Snakebot continuous commands now wait 50 ms after all five ESP
   acknowledgements before advancing and sending another complete angle frame.
   The configurable hold preserves 3x scaling and existing burst playback spacing.

@@ -22,7 +22,6 @@ from mjlab.tasks.locomotion.config.snakebot_v2.rl_cfg import (
   snakebot_locomotion_v2_ppo_cfg,
 )
 from mjlab.tasks.velocity.rl import VelocityOnPolicyRunner
-from mjlab.utils.lab_api.math import quat_apply
 from mjlab.utils.torch import configure_torch_backends
 from mjlab.viewer import NativeMujocoViewer
 from mjlab.viewer.base import ViewerAction
@@ -61,31 +60,42 @@ def configure_wsl_gpu_rendering(device: str) -> bool:
   return True
 
 
-def head_planar_axes(env) -> tuple[torch.Tensor, torch.Tensor]:
-  """Return horizontal forward/left axes from the head's current orientation."""
-  quat = env.scene["robot"].data.root_link_quat_w
-  quat = torch.nn.functional.normalize(quat, dim=-1)
-  # Snakebot's longitudinal axis is local +Z, as in goal_vector_body_frame.
-  local_forward = quat.new_tensor([0.0, 0.0, 1.0]).expand(quat.shape[0], -1)
-  forward_xy = quat_apply(quat, local_forward)[:, :2]
+def snake_planar_axes(env) -> tuple[torch.Tensor, torch.Tensor]:
+  """Return ground-plane forward/left from the whole snake's tail-to-head axis."""
+  robot = env.scene["robot"]
+  body_ids = [
+    robot.body_names.index(f"m{module}_bottom-base-plate-v1") for module in range(1, 6)
+  ]
+  positions = robot.data.body_link_pos_w[:, body_ids, :2]
+  forward_xy = positions[:, 0] - positions[:, -1]
+  # If head and tail overlap in XY, fit a direction to the ordered module
+  # positions. Plate orientation is never used as the forward reference.
+  weights = positions.new_tensor([2.0, 1.0, 0.0, -1.0, -2.0])
+  centered = positions - positions.mean(dim=1, keepdim=True)
+  fitted = (centered * weights[None, :, None]).sum(dim=1)
   length = torch.linalg.vector_norm(forward_xy, dim=-1, keepdim=True)
-  # If the head points vertically, use its projected local +X as a fallback.
-  local_x = quat.new_tensor([1.0, 0.0, 0.0]).expand_as(local_forward)
-  fallback = torch.nn.functional.normalize(quat_apply(quat, local_x)[:, :2], dim=-1)
+  forward_xy = torch.where(length > 1e-6, forward_xy, fitted)
+  length = torch.linalg.vector_norm(forward_xy, dim=-1, keepdim=True)
+  # A collapsed/vertical snake has no horizontal body axis. Use world +X
+  # until its module positions define one, keeping both axes finite and unit.
+  fallback = forward_xy.new_tensor([1.0, 0.0]).expand_as(forward_xy)
   forward_xy = torch.where(length > 1e-6, forward_xy / length.clamp_min(1e-6), fallback)
   left_xy = torch.stack((-forward_xy[:, 1], forward_xy[:, 0]), dim=-1)
   return forward_xy, left_xy
 
 
 def reset_keyboard_goal(env, env_ids, distance: float) -> None:
-  """Place the goal ahead of the COM along the head's horizontal heading."""
+  """Place the goal ahead of the COM along the whole snake's horizontal axis."""
+  # Reset events run after writing joint/root positions and before the normal
+  # forward pass. Refresh body positions before deriving the new body axis.
+  env.sim.forward()
   if env_ids is None:
     env_ids = torch.arange(env.num_envs, device=env.device)
   com_xy = _robot_com_xy(env.scene["robot"])
   if not hasattr(env, "_loco_goal_pos"):
     env._loco_goal_pos = com_xy.clone()
     env._loco_prev_dist = torch.zeros(env.num_envs, device=env.device)
-  forward_xy, _ = head_planar_axes(env)
+  forward_xy, _ = snake_planar_axes(env)
   env._loco_goal_pos[env_ids] = com_xy[env_ids] + distance * forward_xy[env_ids]
   env._loco_prev_dist[env_ids] = distance
 
@@ -174,7 +184,7 @@ class KeyboardGoalViewer(NativeMujocoViewer):
       return True
     elif name == "move_goal":
       with torch.no_grad():
-        forward_xy, left_xy = head_planar_axes(env)
+        forward_xy, left_xy = snake_planar_axes(env)
         delta = self.goal_step * (direction[0] * forward_xy + direction[1] * left_xy)
         env._loco_goal_pos += delta
         # Goal edits are not physical progress and must not spike the reward.
@@ -215,7 +225,7 @@ class KeyboardConfig:
   goal_step: float = 0.1
   """Target movement in meters per key press."""
   initial_distance: float = 0.6
-  """Initial/recentered goal distance ahead of COM along the head's heading."""
+  """Initial/recentered goal distance ahead of COM along the whole-body axis."""
   angle_print_interval: float = 0.0
   """Print all module angles every N simulated seconds; zero disables streaming."""
   device: str | None = None
@@ -262,7 +272,7 @@ def run_keyboard(
       "Arrow keys: same directions | T: recenter target  | Enter: reset robot\n"
       "J: print actual and target joint angles for all five modules (degrees)\n"
       "Space: pause/resume | Close the window to quit.\n"
-      "Directions follow the head module's current heading on the ground."
+      "Directions follow the whole snake's tail-to-head axis on the ground."
     )
     viewer_factory(
       env, policy, cfg.goal_step, cfg.initial_distance, cfg.angle_print_interval

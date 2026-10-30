@@ -268,17 +268,22 @@ Click the viewer window to focus keyboard input.
 
 | Key | Action |
 | --- | --- |
-| W / Up | Move target forward along the head's heading by 0.10 m |
-| S / Down | Move target backward along the head's heading by 0.10 m |
-| A / Left | Move target left relative to the head by 0.10 m |
-| D / Right | Move target right relative to the head by 0.10 m |
-| T | Put the target 0.60 m ahead of COM along the head's heading |
+| W / Up | Move target toward the head along the whole snake's axis by 0.10 m |
+| S / Down | Move target toward the tail along that axis by 0.10 m |
+| A / Left | Move target left of the whole snake's axis by 0.10 m |
+| D / Right | Move target right of the whole snake's axis by 0.10 m |
+| T | Put the target 0.60 m ahead of COM along the whole snake's axis |
 | Enter | Reset the robot and target |
 | Space | Pause/resume |
 | J | Print actual and commanded bottom/top servo angles for all five modules |
 
-Directions follow the head module's current heading, projected onto the
-ground plane, and do not rotate with the camera. Each key
+Directions use the line from module 5 (tail) to module 1 (head), projected onto
+the ground plane. They follow the overall snake body rather than the head
+plate's local normal, and do not rotate with the camera. Left/right are
+perpendicular to this whole-body axis. The same controls apply to continuous
+and burst simulation-to-real launchers. If the endpoints overlap in XY, the
+direction is fitted through all five ordered module positions; if no horizontal
+axis exists, world +X is used temporarily. Each key
 press moves the red target; the policy supplies the joint commands. The
 target remains where you put it after arrival, and the robot does not reset
 when it reaches the target or when you move it farther away. Instability
@@ -327,13 +332,13 @@ Use this launcher as the active command sender. Click the MuJoCo window:
 
 | Input | Effect |
 | --- | --- |
-| W / Up | Move target forward relative to the model's head |
+| W / Up | Move target toward the head along the whole model's tail-to-head axis |
 | S / Down | Move target backward |
 | A / Left | Move target left |
 | D / Right | Move target right |
 | Space | Pause/resume new servo commands |
 | J | Print actual model angles and commanded targets in degrees |
-| T | Place target ahead of the head |
+| T | Place target ahead of COM along the whole snake's axis |
 | Enter | Reset the simulation |
 | Close window | Exit and disconnect MQTT |
 
@@ -476,7 +481,7 @@ modified.
 
 ## Live MQTT hardware mirror
 
-`snakebot_mqtt` runs the same head-relative WASD simulation and sends its
+`snakebot_mqtt` runs the same whole-body-relative WASD simulation and sends its
 commanded servo targets to the physical robot using the supplied ESP sender's
 MQTT initialization, timestamped JSON messages, and request/feedback protocol.
 Run from the existing working `mjlab-fbc8368/` environment:
