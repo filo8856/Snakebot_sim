@@ -32,12 +32,6 @@ class LiveSnakebotConfig(MpuKeyboardConfig):
   """simulation mirrors the model; imu-hybrid additionally feeds physical IMUs to RL."""
   angle_scale: float = 3.0
   """Hardware angle-offset multiplier; 3x gives roughly +/-15 degrees at the servos."""
-  burst_size: int = 100
-  """Simulation frames per burst; each frame contains ten angles. Use 1 for continuous."""
-  burst_frame_interval: float = 0.05
-  """Seconds between timestamped frames during ESP playback (20 Hz by default)."""
-  burst_lead_time: float = 1.0
-  """Upload lead time before the first queued frame executes."""
   feedback_csv: Path = Path("logs/hardware/live_head.csv")
   all_feedback_jsonl: Path = Path("logs/hardware/live_all_modules.jsonl")
   ack_csv: Path = Path("logs/hardware/live_command_ack.csv")
@@ -57,10 +51,6 @@ class FirmwareMqttBridge(AllModuleMpuBridge):
       raise ValueError("This firmware profile requires ESP_01 through ESP_05")
     if cfg.max_steps is not None and cfg.max_steps <= 0:
       raise ValueError("max_steps must be positive when set")
-    if not 1 <= cfg.burst_size <= 180:
-      raise ValueError(
-        "burst_size must be between 1 and 180 (ESP queue capacity is 199)"
-      )
     # Check a worst-case command against a conservative 256-byte MQTT packet
     # budget before opening any connection. The supplied MCU parses 512-byte JSON.
     probe = {
@@ -146,11 +136,7 @@ class FirmwareMqttBridge(AllModuleMpuBridge):
 
 
 def run_live(cfg: LiveSnakebotConfig) -> None:
-  # Imported here to avoid a cycle: burst transport extends this firmware profile.
-  from mjlab.scripts.snakebot_burst import BurstGoalViewer, BurstMqttBridge
-
-  use_bursts = cfg.mode == "simulation" and cfg.burst_size > 1
-  bridge = BurstMqttBridge(cfg) if use_bursts else FirmwareMqttBridge(cfg)
+  bridge = FirmwareMqttBridge(cfg)
 
   def make_viewer(env, policy, *args):
     print(
@@ -179,15 +165,6 @@ def run_live(cfg: LiveSnakebotConfig) -> None:
     # Start with a known neutral hold. No gait command is sent until all five
     # modules have executed this timestamp and acknowledged the command.
     bridge.send([[0.0, 0.0]] * 5)
-    if use_bursts:
-      assert isinstance(bridge, BurstMqttBridge)
-      print(
-        f"Collecting {cfg.burst_size} complete frames per burst; playback interval {cfg.burst_frame_interval:g}s."
-      )
-      print(
-        "Space pauses future bursts; queued ESP commands finish their current playback."
-      )
-      return BurstGoalViewer(env, policy, *args, bridge=bridge)
     return MqttGoalViewer(env, policy, *args, bridge=bridge)
 
   try:

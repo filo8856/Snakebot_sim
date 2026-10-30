@@ -2,12 +2,17 @@
 
 import csv
 import json
+import math
+from collections.abc import Callable
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
 
+from mjlab.scripts import snakebot_live
 from mjlab.scripts.snakebot_live import FirmwareMqttBridge, LiveSnakebotConfig
+from mjlab.scripts.snakebot_mqtt import servo_payload_data
 
 
 def make_bridge(tmp_path, **kwargs):
@@ -143,6 +148,9 @@ def test_misidentified_esp_and_missing_module_fail_clearly(tmp_path):
   "settings",
   [
     {"max_steps": 0},
+    {"angle_scale": 0.0},
+    {"angle_scale": math.inf},
+    {"angle_scale": math.nan},
     {"module_ids": ("ESP_01", "ESP_02", "ESP_03", "ESP_04", "OTHER")},
     {"topic": "too-long/" * 40},
   ],
@@ -225,3 +233,37 @@ def test_hybrid_mode_still_rejects_invalid_imu(tmp_path):
       bridge.poll()
   finally:
     bridge.close()
+
+
+def test_scale_changes_offsets_without_scaling_neutral_and_keeps_limits():
+  cfg = LiveSnakebotConfig()
+  assert cfg.angle_scale == 3
+  assert servo_payload_data([[5.16, -5.16]] * 5, cfg)["ESP_01"] == [105, 75]
+  assert servo_payload_data([[0.0, 0.0]] * 5, cfg)["ESP_01"] == [90, 90]
+  calibrated = replace(cfg, neutral_angles=(100, 80))
+  assert servo_payload_data([[4.0, -4.0]] * 5, calibrated)["ESP_01"] == [112, 68]
+  assert servo_payload_data([[100.0, -100.0]] * 5, cfg)["ESP_01"] == [115, 65]
+
+
+def test_live_launcher_selects_continuous_viewer_without_running_simulation(
+  monkeypatch,
+):
+  cfg = LiveSnakebotConfig()
+  bridge = MagicMock()
+  bridge_factory = MagicMock(return_value=bridge)
+  viewer_factory = MagicMock()
+  env, policy = MagicMock(), MagicMock()
+  monkeypatch.setattr(snakebot_live, "FirmwareMqttBridge", bridge_factory)
+  monkeypatch.setattr(snakebot_live, "MqttGoalViewer", viewer_factory)
+
+  def fake_run_keyboard(config, *, viewer_factory: Callable[..., object], num_steps):
+    assert config is cfg and num_steps is None
+    viewer_factory(env, policy)
+
+  monkeypatch.setattr(snakebot_live, "run_keyboard", fake_run_keyboard)
+  snakebot_live.run_live(cfg)
+  bridge_factory.assert_called_once_with(cfg)
+  bridge.start.assert_called_once()
+  bridge.send.assert_called_once_with([[0.0, 0.0]] * 5)
+  viewer_factory.assert_called_once_with(env, policy, bridge=bridge)
+  bridge.close.assert_called_once()

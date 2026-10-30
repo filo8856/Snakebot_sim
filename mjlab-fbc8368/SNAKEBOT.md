@@ -340,39 +340,24 @@ Use this launcher as the active command sender. Click the MuJoCo window:
 Each key press moves the target 0.10 m by default. The robot is initially
 sent a neutral hold (90°, 90° with the default calibration). Each outgoing
 message contains `request_id`, a future Unix-millisecond `ts`, and all five
-`ESP_01`–`ESP_05` angle pairs. Simulation mode now records and uploads bursts
-of **100 complete frames**, with ten servo angles in each frame. That is
-1,000 individual servo-angle values per burst. All five ESPs must acknowledge
-the initial neutral hold before recording starts.
+`ESP_01`–`ESP_05` angle pairs. Simulation mode sends one complete frame at a
+time, containing all ten servo angles. All five ESPs must acknowledge the
+initial neutral hold before the model starts advancing.
 
-During recording the model runs normally and WASD affects the captured
-trajectory; the physical robot holds its previous targets. Once 100 frames
-are collected, the sender uploads 100 standard firmware-compatible MQTT
-messages in a short burst. Their timestamps are 50 ms apart, giving about
-five seconds of physical playback at 20 Hz. This removes per-frame network
-round-trip delays from the playback timing. The sender waits for playback
-and matching acknowledgements before starting the next batch. Capture time
-depends on simulation throughput and can exceed five wall-clock seconds.
-
-The 200-slot ESP queue has 199 usable entries; burst size is limited to 180,
-and only one burst is outstanding. Feedback deadlines are measured from each
-frame's scheduled execution time, not from the upload time.
-
-**WASD changes during playback affect the next batch. Space prevents future
-bursts; it cannot cancel a burst already queued on the ESPs. Closing the viewer
-also leaves already queued frames to finish.** The supplied firmware has no
-queue-cancel command. Reset is unavailable during queued playback. Partial
-unsent buffers are discarded on reset, simulation instability, or window close.
+The sender waits for matching acknowledgements and the configured publish
+interval before advancing the model and sending the next frame. Actual update
+rate depends on simulation throughput, command scheduling, and network latency.
+WASD changes apply when the model next advances; no frames are buffered into
+batches. Space pauses new commands, and closing the viewer disconnects MQTT.
+A command already sent may still execute at its scheduled timestamp.
 
 Defaults and tuning:
 
 ```bash
-# Default: 3x hardware angle offsets, 100 frames per burst.
-uv run --no-sync python -m mjlab.scripts.snakebot_live --angle-scale 3 --burst-size 100
-# Smaller batches reduce recording and control latency.
-uv run --no-sync python -m mjlab.scripts.snakebot_live --angle-scale 3 --burst-size 20
-# Original continuous, unscaled behavior.
-uv run --no-sync python -m mjlab.scripts.snakebot_live --angle-scale 1 --burst-size 1
+# Default: continuous commands with 3x hardware angle offsets.
+uv run --no-sync python -m mjlab.scripts.snakebot_live --angle-scale 3
+# Original unscaled hardware angles.
+uv run --no-sync python -m mjlab.scripts.snakebot_live --angle-scale 1
 ```
 Simulation mode requires no MPU connection: `sensor_valid: false` is accepted
 as part of an otherwise correctly identified command acknowledgement. Every
@@ -418,17 +403,17 @@ uv run --no-sync python -m mjlab.scripts.snakebot_live --dry-run True
 uv run --no-sync python -m mjlab.scripts.snakebot_live --dry-run True --max-steps 8
 ```
 
-The default `--mode simulation` mirrors the simulation in batches and logs all physical
-IMUs. To feed those IMUs into the RL actor while still using model servo and
-position estimates, select the separate hybrid behavior:
+The default `--mode simulation` mirrors the simulation one frame at a time and
+logs all physical feedback. To feed physical IMUs into the RL actor while still
+using model servo and position estimates, select the separate hybrid behavior:
 
 ```bash
 uv run --no-sync python -m mjlab.scripts.snakebot_live --mode imu-hybrid
 ```
 
-Hybrid mode retains continuous per-frame feedback, regardless of burst size,
-because its policy needs current IMU measurements. The configurable hardware
-angle scale also applies in hybrid mode. In hybrid mode, WASD uses IMU-estimated
+Hybrid mode uses continuous per-frame feedback because its policy needs current
+IMU measurements. The configurable hardware angle scale also applies in hybrid
+mode. In hybrid mode, WASD uses IMU-estimated
 head orientation. Begin in the model's
 neutral pose for alignment. Physical position remains unmeasured; the
 [hybrid limitations and data sources](#imumodel-hybrid-controller-separate-version)

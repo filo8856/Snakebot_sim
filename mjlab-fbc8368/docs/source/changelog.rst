@@ -17,9 +17,8 @@ Upcoming version (not yet released)
 Added
 ^^^^^
 
-- Configurable hardware angle scaling (3x by default in the live launcher)
-  and 100-frame simulation bursts with timestamped 20 Hz ESP playback,
-  per-frame feedback deadlines, and bounded queue usage.
+- Configurable hardware angle scaling (3x by default in the live launcher),
+  with existing servo limits and neutral calibration preserved.
 
 - Simulation-to-real mode supports ESPs without connected MPUs while retaining
   five-module command acknowledgements; hybrid mode still requires valid IMUs.
@@ -115,6 +114,9 @@ Added
 
 Changed
 ^^^^^^^
+
+- Removed queued Snakebot motion bursts and restored continuous commands,
+  waiting for all five ESP acknowledgements while retaining 3x angle scaling.
 
 - Replaced the single ``scale`` parameter in ``DifferentialIKActionCfg`` with
   separate ``delta_pos_scale`` and ``delta_ori_scale`` for independent scaling
