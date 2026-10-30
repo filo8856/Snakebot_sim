@@ -1,5 +1,6 @@
 """Contract tests matching the uploaded five-ESP main.cpp firmware."""
 
+import csv
 import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -13,6 +14,7 @@ def make_bridge(tmp_path, **kwargs):
   cfg = LiveSnakebotConfig(
     feedback_csv=tmp_path / "head.csv",
     all_feedback_jsonl=tmp_path / "all.jsonl",
+    ack_csv=tmp_path / "ack.csv",
     **kwargs,
   )
   now = [1000.0]
@@ -158,5 +160,68 @@ def test_dry_run_never_opens_network(tmp_path):
     bridge.send([[-3.2, 4.8]] * 5)
     client.connect.assert_not_called()
     client.publish.assert_not_called()
+  finally:
+    bridge.close()
+
+
+def test_simulation_streams_without_any_connected_mpu(tmp_path):
+  bridge, client, now = make_bridge(tmp_path)
+  try:
+    first = bridge.send([[0.0, 0.0]] * 5)
+    now[0] += 1.1
+    for module in bridge.cfg.module_ids[:4]:
+      reply(bridge, first, module, sensor_valid=False)
+    assert not bridge.poll()  # Still requires all five command acknowledgements.
+    reply(bridge, first, "ESP_05", sensor_valid=False)
+    assert bridge.poll()
+    with bridge.cfg.ack_csv.open() as stream:
+      rows = list(csv.DictReader(stream))
+    assert len(rows) == 5
+    assert all(row["sensor_valid"] == "False" for row in rows)
+    records = [
+      json.loads(line)
+      for line in bridge.cfg.all_feedback_jsonl.read_text().splitlines()
+    ]
+    assert all(row["feedback"]["sensor_valid"] is False for row in records)
+    assert not bridge.cfg.feedback_csv.exists()  # No fake valid IMU CSV.
+    second = bridge.send([[5.16, -5.16]] * 5)
+    assert all(pair == [95, 85] for pair in second["data"].values())
+    assert client.publish.call_count == 2
+  finally:
+    bridge.close()
+
+
+def test_simulation_acknowledgements_need_no_imu_fields(tmp_path):
+  bridge, _, now = make_bridge(tmp_path)
+  try:
+    command = bridge.send([[0.0, 0.0]] * 5)
+    now[0] += 1.1
+    for module in bridge.cfg.module_ids:
+      data = {
+        "esp_id": module,
+        "request_id": command["request_id"],
+        "command_ts": command["ts"],
+        "sensor_valid": False,
+      }
+      bridge._on_feedback(
+        None,
+        None,
+        SimpleNamespace(
+          topic=f"servos/{module}/feedback",
+          payload=json.dumps(data).encode(),
+        ),
+      )
+    assert bridge.poll()
+  finally:
+    bridge.close()
+
+
+def test_hybrid_mode_still_rejects_invalid_imu(tmp_path):
+  bridge, _, _ = make_bridge(tmp_path, mode="imu-hybrid")
+  try:
+    command = bridge.send([[0.0, 0.0]] * 5)
+    reply(bridge, command, "ESP_01", sensor_valid=False)
+    with pytest.raises(RuntimeError, match="Invalid IMU feedback from ESP_01"):
+      bridge.poll()
   finally:
     bridge.close()

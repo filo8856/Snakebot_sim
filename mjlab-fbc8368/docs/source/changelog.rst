@@ -17,6 +17,9 @@ Upcoming version (not yet released)
 Added
 ^^^^^
 
+- Simulation-to-real mode supports ESPs without connected MPUs while retaining
+  five-module command acknowledgements; hybrid mode still requires valid IMUs.
+
 - Five-module live Snakebot launcher matched to the supplied ESP firmware,
   using the confirmed broker, simulation/hybrid modes, and acknowledgement
   checks for every module's ID and command timestamp.

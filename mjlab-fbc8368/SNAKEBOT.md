@@ -341,8 +341,11 @@ Each key press moves the target 0.10 m by default. The robot is initially
 sent a neutral hold (90°, 90° with the default calibration). Each outgoing
 message contains `request_id`, a future Unix-millisecond `ts`, and all five
 `ESP_01`–`ESP_05` angle pairs. The next policy step waits for all five valid
-feedback replies matching both the request ID and command timestamp.
-Terminal output confirms when all five ESPs have acknowledged a command.
+command acknowledgements matching both the request ID and command timestamp.
+Simulation mode requires no MPU connection: `sensor_valid: false` is accepted
+as part of an otherwise correctly identified command acknowledgement. Every
+angle and policy observation comes from the simulation. Hybrid mode continues
+to require valid IMUs. Terminal output confirms when all five ESPs have acknowledged a command.
 Missing feedback identifies the missing module and pauses the stream.
 
 The first model module (head) maps to ESP_01 and the tail maps to ESP_05.
@@ -360,7 +363,9 @@ Each ESP must have its own `THIS_ESP_ID` and publish `esp_id`, `request_id`,
 `servos/<ESP_ID>/feedback`. MCU feedback is captured immediately after
 `servo.write()`; it acknowledges issuing the command, not measured servo
 position or completion of the mechanical movement. Feedback is logged to
-`logs/hardware/live_all_modules.jsonl` and `logs/hardware/live_head.csv`.
+`logs/hardware/live_all_modules.jsonl`, preserving the true `sensor_valid` flags.
+Simulation command acknowledgements are saved to `logs/hardware/live_command_ack.csv`;
+hybrid head IMU readings use `logs/hardware/live_head.csv`.
 
 The old Python sender points to 10.49.2.223 and its active feedback function
 addresses only ESP_01. This launcher uses the confirmed firmware address and

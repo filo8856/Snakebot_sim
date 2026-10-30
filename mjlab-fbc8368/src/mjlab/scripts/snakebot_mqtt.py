@@ -210,6 +210,31 @@ class MqttBridge:
     self.poll()
     print(f"MQTT connected: {self.cfg.broker}:{self.cfg.port} -> {self.cfg.topic}")
 
+  def _validate_feedback(self, feedback: dict, pending: tuple[int, int, float]) -> None:
+    if feedback.get("sensor_valid") is not True or any(
+      not isinstance(feedback.get(field), (int, float))
+      or not math.isfinite(feedback[field])
+      for field in ("roll", "pitch", "gx", "gy", "gz")
+    ):
+      message = f"Invalid MPU feedback for command #{pending[0]}"
+      self._fail(message)
+      raise RuntimeError(message)
+
+  def _record_feedback(self, feedback: dict, pending: tuple[int, int, float]) -> None:
+    path = self.cfg.feedback_csv
+    path.parent.mkdir(parents=True, exist_ok=True)
+    write_header = not path.exists() or path.stat().st_size == 0
+    with path.open("a", newline="", encoding="utf-8") as stream:
+      writer = csv.DictWriter(stream, fieldnames=FEEDBACK_FIELDS)
+      if write_header:
+        writer.writeheader()
+      row = {field: feedback.get(field) for field in FEEDBACK_FIELDS}
+      row["command_ts"] = feedback.get("command_ts", pending[1])
+      writer.writerow(row)
+    print(
+      f"Feedback #{pending[0]}: roll={feedback['roll']:.2f}, pitch={feedback['pitch']:.2f}"
+    )
+
   def poll(self) -> bool:
     """Consume matching feedback and report whether another command can be sent."""
     with self._lock:
@@ -220,27 +245,8 @@ class MqttBridge:
     if error:
       raise RuntimeError(error)
     if feedback is not None and pending is not None:
-      if feedback.get("sensor_valid") is not True or any(
-        not isinstance(feedback.get(field), (int, float))
-        or not math.isfinite(feedback[field])
-        for field in ("roll", "pitch", "gx", "gy", "gz")
-      ):
-        message = f"Invalid MPU feedback for command #{pending[0]}"
-        self._fail(message)
-        raise RuntimeError(message)
-      path = self.cfg.feedback_csv
-      path.parent.mkdir(parents=True, exist_ok=True)
-      write_header = not path.exists() or path.stat().st_size == 0
-      with path.open("a", newline="", encoding="utf-8") as stream:
-        writer = csv.DictWriter(stream, fieldnames=FEEDBACK_FIELDS)
-        if write_header:
-          writer.writeheader()
-        row = {field: feedback.get(field) for field in FEEDBACK_FIELDS}
-        row["command_ts"] = feedback.get("command_ts", pending[1])
-        writer.writerow(row)
-      print(
-        f"Feedback #{pending[0]}: roll={feedback['roll']:.2f}, pitch={feedback['pitch']:.2f}"
-      )
+      self._validate_feedback(feedback, pending)
+      self._record_feedback(feedback, pending)
       pending = None
     if pending is not None:
       if self._clock() - pending[2] > self.cfg.feedback_timeout:
