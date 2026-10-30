@@ -141,35 +141,30 @@ class BurstMqttBridge(FirmwareMqttBridge):
       return
     sample = MpuSample(module, data["request_id"], self._clock(), data)
     with self._lock:
-      frame.acknowledgements[module] = sample
+      if self._burst_pending.get(data["request_id"]) is frame:
+        frame.acknowledgements[module] = sample
 
   def poll(self) -> bool:
     with self._lock:
       error = self._error
-      completed = [
-        request
-        for request, frame in self._burst_pending.items()
-        if len(frame.acknowledgements) == 5
-      ]
-      complete_frames = [self._burst_pending.pop(request) for request in completed]
-      overdue = [
-        (request, frame)
-        for request, frame in self._burst_pending.items()
-        if self._clock() > frame.due_at + self.cfg.feedback_timeout
-      ]
+      resolved = []
+      # Resolve in command order, even when later replies arrive before an
+      # earlier frame's timeout. Otherwise one lost reply could reset/inflate
+      # a module's consecutive-miss counter incorrectly.
+      for request, frame in list(self._burst_pending.items()):
+        complete = len(frame.acknowledgements) == 5
+        expired = self._clock() > frame.due_at + self.cfg.feedback_timeout
+        if not complete and not expired:
+          break
+        resolved.append(self._burst_pending.pop(request))
     if error:
       raise RuntimeError(error)
-    if overdue:
-      request, frame = overdue[0]
-      missing = [
-        name for name in self.cfg.module_ids if name not in frame.acknowledgements
-      ]
-      message = (
-        f"Burst frame #{request} timed out; missing modules: {', '.join(missing)}"
-      )
-      self._fail(message)
-      raise TimeoutError(message)
-    for frame in complete_frames:
+    for frame in resolved:
+      if len(frame.acknowledgements) < 5:
+        self._record_partial_acknowledgements(
+          frame.payload["request_id"], frame.payload["ts"], frame.acknowledgements
+        )
+        continue
       self.latest_samples = tuple(
         frame.acknowledgements[name] for name in self.cfg.module_ids
       )

@@ -118,6 +118,12 @@ Added
 Changed
 ^^^^^^^
 
+- Simulation-to-real launchers tolerate isolated missing command ACKs and pause
+  after 10 consecutive misses per ESP, configurable with ``--max-missed-acks``.
+  Matching replies reset each module's counter; burst outcomes are resolved in
+  command order and partial/missing feedback is logged explicitly. Hybrid IMU
+  mode retains its strict feedback requirement.
+
 - Snakebot simulation-based WASD/arrow controls and target recentering now use
   the whole snake's projected tail-to-head axis instead of the head plate's
   orientation, including both continuous and burst live launchers.

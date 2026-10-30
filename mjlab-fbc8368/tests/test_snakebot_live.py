@@ -20,6 +20,7 @@ def make_bridge(tmp_path, **kwargs):
     feedback_csv=tmp_path / "head.csv",
     all_feedback_jsonl=tmp_path / "all.jsonl",
     ack_csv=tmp_path / "ack.csv",
+    ack_status_csv=tmp_path / "ack_status.csv",
     **kwargs,
   )
   now = [1000.0]
@@ -136,7 +137,7 @@ def test_misidentified_esp_and_missing_module_fail_clearly(tmp_path):
       bridge.poll()
   finally:
     bridge.close()
-  bridge, _, now = make_bridge(tmp_path)
+  bridge, _, now = make_bridge(tmp_path, max_missed_acks=1)
   try:
     command = bridge.send([[0.0, 0.0]] * 5)
     for module in bridge.cfg.module_ids[:4]:
@@ -152,6 +153,10 @@ def test_misidentified_esp_and_missing_module_fail_clearly(tmp_path):
   "settings",
   [
     {"max_steps": 0},
+    {"max_missed_acks": 0},
+    {"max_missed_acks": -1},
+    {"max_missed_acks": True},
+    {"max_missed_acks": 1.5},
     {"angle_scale": 0.0},
     {"angle_scale": math.inf},
     {"angle_scale": math.nan},
@@ -241,6 +246,85 @@ def test_hybrid_mode_still_rejects_invalid_imu(tmp_path):
     command = bridge.send([[0.0, 0.0]] * 5)
     reply(bridge, command, "ESP_01", sensor_valid=False)
     with pytest.raises(RuntimeError, match="Invalid IMU feedback from ESP_01"):
+      bridge.poll()
+  finally:
+    bridge.close()
+
+
+def test_missing_ack_is_logged_without_faking_feedback_and_recovery_resets(tmp_path):
+  bridge, _, now = make_bridge(tmp_path)
+  try:
+    first = bridge.send([[0.0, 0.0]] * 5)
+    for module in bridge.cfg.module_ids:
+      if module != "ESP_03":
+        reply(bridge, first, module, sensor_valid=False)
+    now[0] += 5.1
+    assert not bridge.poll()  # Resolve timeout, then retain the 50 ms hold.
+    assert bridge.missed_ack_streaks["ESP_03"] == 1
+    assert bridge.latest_samples is None
+    with bridge.cfg.ack_csv.open() as stream:
+      assert len(list(csv.DictReader(stream))) == 4
+    with bridge.cfg.ack_status_csv.open() as stream:
+      rows = list(csv.DictReader(stream))
+    assert len(rows) == 5
+    assert rows[2]["ack_received"] == "False"
+    for _ in range(20):
+      assert not bridge.poll()
+    assert bridge.missed_ack_streaks["ESP_03"] == 1
+    now[0] += 0.051
+    second = bridge.send([[1.0, -1.0]] * 5)
+    now[0] += 0.1
+    for module in bridge.cfg.module_ids:
+      reply(bridge, second, module, sensor_valid=False)
+    assert not bridge.poll()
+    assert bridge.missed_ack_streaks["ESP_03"] == 0
+    now[0] += 0.051
+    assert bridge.poll()
+  finally:
+    bridge.close()
+
+
+@pytest.mark.parametrize(
+  "missing_modules", [("ESP_03",), tuple(f"ESP_{i:02d}" for i in range(1, 6))]
+)
+def test_tenth_consecutive_missing_ack_stops_continuous_stream(
+  tmp_path, missing_modules
+):
+  bridge, client, now = make_bridge(tmp_path)
+  try:
+    previous = None
+    for missed in range(1, 11):
+      command = bridge.send([[1.0, -1.0]] * 5)
+      if previous is not None:
+        reply(bridge, previous, "ESP_03")  # A stale ACK cannot reset this frame.
+      for module in bridge.cfg.module_ids:
+        if module not in missing_modules:
+          reply(bridge, command, module, sensor_valid=False)
+      now[0] += 5.1
+      if missed < 10:
+        assert not bridge.poll()
+        assert bridge.missed_ack_streaks["ESP_03"] == missed
+        now[0] += 0.051
+        assert bridge.poll()
+      else:
+        with pytest.raises(TimeoutError, match="10 consecutive.*ESP_03"):
+          bridge.poll()
+      previous = command
+    with pytest.raises(RuntimeError):
+      bridge.send([[0.0, 0.0]] * 5)
+    assert client.publish.call_count == 10
+  finally:
+    bridge.close()
+
+
+def test_hybrid_still_stops_on_first_missing_imu_batch(tmp_path):
+  bridge, _, now = make_bridge(tmp_path, mode="imu-hybrid")
+  try:
+    command = bridge.send([[0.0, 0.0]] * 5)
+    for module in bridge.cfg.module_ids[:4]:
+      reply(bridge, command, module)
+    now[0] += 5.1
+    with pytest.raises(TimeoutError, match="ESP_05"):
       bridge.poll()
   finally:
     bridge.close()

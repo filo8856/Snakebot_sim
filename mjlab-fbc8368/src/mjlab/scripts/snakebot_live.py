@@ -33,17 +33,21 @@ class LiveSnakebotConfig(MpuKeyboardConfig):
   angle_scale: float = 3.0
   """Hardware angle-offset multiplier; 3x gives roughly +/-15 degrees at the servos."""
   post_command_delay: float = 0.05
-  """Wait 50 ms after all five command acknowledgements before the next live frame."""
+  """Hold 50 ms after command ACKs or a tolerated timeout before the next frame."""
   burst_size: int = 1
   """Simulation frames per burst; each frame contains ten angles. Use 1 for continuous."""
   burst_frame_interval: float = 0.05
   """Seconds between timestamped frames during ESP playback (20 Hz by default)."""
   burst_lead_time: float = 1.0
   """Upload lead time before the first queued frame executes."""
+  max_missed_acks: int = 10
+  """Pause simulation mode after this many consecutive missed commands per ESP."""
   feedback_csv: Path = Path("logs/hardware/live_head.csv")
   all_feedback_jsonl: Path = Path("logs/hardware/live_all_modules.jsonl")
   ack_csv: Path = Path("logs/hardware/live_command_ack.csv")
   """Command acknowledgements for simulation mode; no connected MPU is required."""
+  ack_status_csv: Path = Path("logs/hardware/live_ack_status.csv")
+  """Per-command ACK/miss status for every ESP, including missing replies."""
   max_steps: int | None = None
   """Optional number of policy steps before closing the viewer and disconnecting."""
 
@@ -59,6 +63,8 @@ class FirmwareMqttBridge(AllModuleMpuBridge):
       raise ValueError("This firmware profile requires ESP_01 through ESP_05")
     if cfg.max_steps is not None and cfg.max_steps <= 0:
       raise ValueError("max_steps must be positive when set")
+    if type(cfg.max_missed_acks) is not int or cfg.max_missed_acks < 1:
+      raise ValueError("max_missed_acks must be a positive integer")
     if not 1 <= cfg.burst_size <= 180:
       raise ValueError(
         "burst_size must be between 1 and 180 (ESP queue capacity is 199)"
@@ -76,6 +82,8 @@ class FirmwareMqttBridge(AllModuleMpuBridge):
         "Command topic/payload exceeds the 256-byte firmware packet budget"
       )
     self._reported_request = 0
+    self._last_ack_outcome = 0
+    self.missed_ack_streaks = {name: 0 for name in cfg.module_ids}
 
   def _on_feedback(self, client, userdata, msg):
     module = self._topics.get(msg.topic)
@@ -126,6 +134,13 @@ class FirmwareMqttBridge(AllModuleMpuBridge):
     if self.cfg.mode == "imu-hybrid":
       super()._record_feedback(feedback, pending)
       return
+    samples = {s.module_id: s for s in self.latest_samples or ()}
+    self._write_ack_csv(samples)
+    self._record_ack_outcome(pending[0], pending[1], samples)
+
+  def _write_ack_csv(self, samples: dict[str, MpuSample]) -> None:
+    if not samples:
+      return
     path = self.cfg.ack_csv
     path.parent.mkdir(parents=True, exist_ok=True)
     header = not path.exists() or path.stat().st_size == 0
@@ -134,10 +149,104 @@ class FirmwareMqttBridge(AllModuleMpuBridge):
       writer = csv.DictWriter(stream, fieldnames=fields)
       if header:
         writer.writeheader()
-      for sample in self.latest_samples or ():
+      for sample in samples.values():
         writer.writerow({field: sample.data.get(field) for field in fields})
 
+  def _record_ack_outcome(
+    self, request_id: int, timestamp: int, samples: dict[str, MpuSample]
+  ) -> None:
+    """Resolve commands in request order; each frame affects each streak once."""
+    if request_id <= self._last_ack_outcome:
+      return
+    self._last_ack_outcome = request_id
+    missing = []
+    for module in self.cfg.module_ids:
+      previous = self.missed_ack_streaks[module]
+      if module in samples:
+        self.missed_ack_streaks[module] = 0
+        if previous:
+          print(f"{module} ACK recovered after {previous} missed commands")
+      else:
+        self.missed_ack_streaks[module] += 1
+        missing.append(module)
+    path = self.cfg.ack_status_csv
+    path.parent.mkdir(parents=True, exist_ok=True)
+    header = not path.exists() or path.stat().st_size == 0
+    with path.open("a", newline="", encoding="utf-8") as stream:
+      writer = csv.writer(stream)
+      if header:
+        writer.writerow(
+          ("esp_id", "request_id", "command_ts", "ack_received", "consecutive_misses")
+        )
+      for module in self.cfg.module_ids:
+        writer.writerow(
+          (
+            module,
+            request_id,
+            timestamp,
+            module in samples,
+            self.missed_ack_streaks[module],
+          )
+        )
+    if missing:
+      detail = ", ".join(
+        f"{module} ({self.missed_ack_streaks[module]}/{self.cfg.max_missed_acks})"
+        for module in missing
+      )
+      print(f"Command #{request_id}: missing ACK after timeout: {detail}")
+      failed = [
+        module
+        for module in missing
+        if self.missed_ack_streaks[module] >= self.cfg.max_missed_acks
+      ]
+      if failed:
+        message = (
+          f"Command #{request_id}: {self.cfg.max_missed_acks} consecutive missing "
+          f"acknowledgements from {', '.join(failed)}"
+        )
+        self._fail(message)
+        raise TimeoutError(message)
+
+  def _record_partial_acknowledgements(
+    self, request_id: int, timestamp: int, samples: dict[str, MpuSample]
+  ) -> None:
+    # Log only actual received packets. Never synthesize an ACK or IMU sample.
+    self._write_ack_csv(samples)
+    if samples:
+      path = self.cfg.all_feedback_jsonl
+      path.parent.mkdir(parents=True, exist_ok=True)
+      with path.open("a", encoding="utf-8") as stream:
+        for sample in samples.values():
+          stream.write(
+            json.dumps(
+              {
+                "module_id": sample.module_id,
+                "received_monotonic_s": sample.received_at,
+                "feedback": sample.data,
+              }
+            )
+            + "\n"
+          )
+    self._record_ack_outcome(request_id, timestamp, samples)
+
   def poll(self) -> bool:
+    expired = None
+    if self.cfg.mode == "simulation":
+      with self._lock:
+        if (
+          self._error is None
+          and self._pending is not None
+          and self._feedback is None
+          and self._clock() - self._pending[2] > self.cfg.feedback_timeout
+        ):
+          expired = (self._pending, dict(self._samples))
+          self._pending = None
+      if expired is not None:
+        pending, samples = expired
+        self._record_partial_acknowledgements(pending[0], pending[1], samples)
+        self._next_send = max(
+          self._next_send, self._clock() + self.cfg.post_command_delay
+        )
     ready = super().poll()
     if self.latest_samples is not None:
       request_id = self.latest_samples[0].request_id
@@ -160,13 +269,13 @@ def run_live(cfg: LiveSnakebotConfig) -> None:
       f"Head-to-tail ESP order: {', '.join(cfg.module_ids)}\n"
       "Servo 1 / pin 32: bottom; servo 2 / pin 33: top (existing sender order).\n"
       "WASD/arrows: move target | Space: pause/resume | J: angles | T: recenter\n"
-      "The live stream requires matching ESP IDs, request_id and command_ts from all five ESPs."
+      "Received ACKs must match ESP IDs, request_id and command_ts."
     )
     print(
       f"Hardware angle scale: {cfg.angle_scale:g}x; servo limits {cfg.servo_min}-{cfg.servo_max} degrees."
     )
     print(
-      f"Continuous commands wait {cfg.post_command_delay * 1000:g} ms after all five acknowledgements."
+      f"Continuous commands hold {cfg.post_command_delay * 1000:g} ms after ACKs or a tolerated timeout."
     )
     if cfg.mode == "imu-hybrid":
       print(
@@ -181,8 +290,10 @@ def run_live(cfg: LiveSnakebotConfig) -> None:
       return MpuGoalViewer(env, hybrid, *args, bridge=bridge, hybrid_policy=hybrid)
     bridge.start()
     print("SIMULATION ANGLES ONLY: MPU hardware and IMU readings are not required.")
-    # Start with a known neutral hold. No gait command is sent until all five
-    # modules have executed this timestamp and acknowledged the command.
+    print(
+      f"Missing ACKs are logged; pause after {cfg.max_missed_acks} consecutive misses per ESP."
+    )
+    # The initial neutral hold uses the same ACK timeout/miss policy as gait frames.
     bridge.send([[0.0, 0.0]] * 5)
     if use_bursts:
       assert isinstance(bridge, BurstMqttBridge)

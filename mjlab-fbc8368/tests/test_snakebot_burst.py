@@ -21,6 +21,7 @@ def bridge_fixture(tmp_path, **settings):
   settings.setdefault("burst_size", 100)
   cfg = LiveSnakebotConfig(
     ack_csv=tmp_path / "ack.csv",
+    ack_status_csv=tmp_path / "ack_status.csv",
     feedback_csv=tmp_path / "imu.csv",
     all_feedback_jsonl=tmp_path / "all.jsonl",
     **settings,
@@ -140,7 +141,9 @@ def test_early_feedback_cannot_start_overlapping_playback(tmp_path):
 
 
 def test_feedback_timeout_is_after_frame_execution_and_keeps_missing_id(tmp_path):
-  bridge, client, now = bridge_fixture(tmp_path, burst_size=3, feedback_timeout=0.2)
+  bridge, client, now = bridge_fixture(
+    tmp_path, burst_size=3, feedback_timeout=0.2, max_missed_acks=1
+  )
   try:
     payloads = bridge.send_burst([[[0.0, 0.0]] * 5] * 3)
     acknowledge(bridge, payloads[0], modules=bridge.cfg.module_ids[:4])
@@ -163,6 +166,86 @@ def test_invalid_frame_rejects_entire_burst_before_any_publish(tmp_path):
     with pytest.raises(ValueError):
       bridge.send_burst(frames)
     client.publish.assert_not_called()
+  finally:
+    bridge.close()
+
+
+def test_burst_missing_replies_are_counted_in_order_and_later_success_resets(tmp_path):
+  bridge, _, now = bridge_fixture(tmp_path, burst_size=3)
+  try:
+    payloads = bridge.send_burst([[[0.0, 0.0]] * 5] * 3)
+    others = [module for module in bridge.cfg.module_ids if module != "ESP_03"]
+    acknowledge(bridge, payloads[2], modules=others)
+    acknowledge(bridge, payloads[1])
+    acknowledge(bridge, payloads[0], modules=others)
+    now[0] = 1.2
+    assert not bridge.poll()  # Earlier frame still has time to receive its ACK.
+    assert bridge.missed_ack_streaks["ESP_03"] == 0
+    now[0] = 6.2
+    assert bridge.poll()
+    # Miss #1, success #2, miss #3: one consecutive miss, not two.
+    assert bridge.missed_ack_streaks["ESP_03"] == 1
+    with bridge.cfg.ack_csv.open() as stream:
+      rows = list(csv.DictReader(stream))
+    assert len(rows) == 13  # No fabricated ACKs for either missing packet.
+    assert len(bridge.cfg.all_feedback_jsonl.read_text().splitlines()) == 13
+    with bridge.cfg.ack_status_csv.open() as stream:
+      rows = list(csv.DictReader(stream))
+    assert len(rows) == 15
+    esp3 = [row for row in rows if row["esp_id"] == "ESP_03"]
+    assert [row["consecutive_misses"] for row in esp3] == ["1", "0", "1"]
+    assert bridge.poll()  # Repeated polls never count a missing frame twice.
+    assert bridge.missed_ack_streaks["ESP_03"] == 1
+  finally:
+    bridge.close()
+
+
+def test_tenth_consecutive_burst_miss_stops_even_if_later_frames_already_acked(
+  tmp_path,
+):
+  bridge, client, now = bridge_fixture(tmp_path, burst_size=11)
+  try:
+    payloads = bridge.send_burst([[[0.0, 0.0]] * 5] * 11)
+    others = [module for module in bridge.cfg.module_ids if module != "ESP_03"]
+    acknowledge(bridge, payloads[-1])
+    for payload in reversed(payloads[:-1]):
+      acknowledge(bridge, payload, modules=others)
+    now[0] = 7.0
+    with pytest.raises(TimeoutError, match="10 consecutive.*ESP_03"):
+      bridge.poll()
+    assert bridge.missed_ack_streaks["ESP_03"] == 10
+    with pytest.raises(RuntimeError):
+      bridge.send_burst([[[0.0, 0.0]] * 5])
+    assert client.publish.call_count == 11
+  finally:
+    bridge.close()
+
+
+def test_late_burst_reply_before_timeout_does_not_count_as_a_miss(tmp_path):
+  bridge, _, now = bridge_fixture(tmp_path, burst_size=2)
+  try:
+    payloads = bridge.send_burst([[[0.0, 0.0]] * 5] * 2)
+    acknowledge(bridge, payloads[1])
+    now[0] = 1.2
+    assert not bridge.poll()
+    now[0] = 5.9
+    acknowledge(bridge, payloads[0])
+    assert bridge.poll()
+    assert all(count == 0 for count in bridge.missed_ack_streaks.values())
+  finally:
+    bridge.close()
+
+
+def test_ten_isolated_burst_misses_do_not_pause_the_stream(tmp_path):
+  bridge, _, now = bridge_fixture(tmp_path, burst_size=20)
+  try:
+    payloads = bridge.send_burst([[[0.0, 0.0]] * 5] * 20)
+    others = [module for module in bridge.cfg.module_ids if module != "ESP_03"]
+    for index, payload in enumerate(payloads):
+      acknowledge(bridge, payload, modules=others if index % 2 == 0 else None)
+    now[0] = 8.0
+    assert bridge.poll()
+    assert all(count == 0 for count in bridge.missed_ack_streaks.values())
   finally:
     bridge.close()
 

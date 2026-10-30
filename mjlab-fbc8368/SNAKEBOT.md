@@ -346,12 +346,13 @@ Each key press moves the target 0.10 m by default. The robot is initially
 sent a neutral hold (90°, 90° with the default calibration). Each outgoing
 message contains `request_id`, a future Unix-millisecond `ts`, and all five
 `ESP_01`–`ESP_05` angle pairs. By default, simulation mode sends one complete
-frame at a time, containing all ten servo angles. All five ESPs must acknowledge the
-initial neutral hold before the model starts advancing.
+frame at a time, containing all ten servo angles. The initial neutral hold uses
+the same acknowledgement timeout and missed-command policy as subsequent frames.
 
 In continuous mode, the sender waits for matching acknowledgements from all five
-ESPs, then holds for another **50 ms** before advancing the model and sending
-the next frame. This delay applies once per complete set of ten servo targets,
+ESPs or the configured feedback timeout (five seconds by default), then holds
+for another **50 ms** before advancing and sending the next frame, provided the
+miss limit has not been reached. This delay applies once per complete set of ten servo targets,
 so all five modules stay together. Configure it with `--post-command-delay 0.05`
 (seconds). The configured publish interval also applies. Actual update
 rate depends on simulation throughput, command scheduling, and network latency.
@@ -382,7 +383,9 @@ at a time.
 Continuous streaming remains the default (`--burst-size 1`). For optional burst
 playback, each frame contains all ten servo angles. The model records the batch,
 then sends individually timestamped commands spaced 50 ms apart. The model waits
-for playback and acknowledgements from all five ESPs before recording again.
+for playback and acknowledgement resolution before recording again. A missing
+reply is resolved when its feedback timeout expires; isolated misses do not
+stop playback or prevent the next batch.
 Capture time depends on simulation throughput. Batch size is capped at 180 to
 stay within the firmware queue capacity.
 
@@ -401,7 +404,20 @@ Simulation mode requires no MPU connection: `sensor_valid: false` is accepted
 as part of an otherwise correctly identified command acknowledgement. Every
 angle and policy observation comes from the simulation. Hybrid mode continues
 to require valid IMUs. Terminal output confirms when all five ESPs have acknowledged a command.
-Missing feedback identifies the missing module and pauses the stream.
+Simulation mode tracks consecutive missing command acknowledgements separately
+for each ESP. An expired command increments that ESP's counter once, and a
+matching acknowledgement for a subsequent command resets it. The stream pauses
+only when one ESP misses **10 consecutive commands**, not after ten viewer polls
+or ten isolated misses. Burst outcomes are evaluated in command order, even if
+packets arrive out of order. Missing replies remain unknown; no successful ACK
+or IMU reading is invented. MQTT disconnects, publish failures, and invalid ESP
+identities still stop the stream immediately. Hybrid mode retains strict IMU
+requirements and stops on its first incomplete sensor batch.
+
+Use `--max-missed-acks 10` to configure the threshold, or `--max-missed-acks 1`
+for the previous strict behavior. Continuous mode still waits for the feedback
+timeout before skipping a missing reply, so a disconnected module causes slower
+updates during those tolerated misses. Burst execution timestamps are unchanged.
 
 The first model module (head) maps to ESP_01 and the tail maps to ESP_05.
 The first angle is the bottom servo / GPIO32, and the second is the top
@@ -424,6 +440,8 @@ Each ESP must have its own `THIS_ESP_ID` and publish `esp_id`, `request_id`,
 position or completion of the mechanical movement. Feedback is logged to
 `logs/hardware/live_all_modules.jsonl`, preserving the true `sensor_valid` flags.
 Simulation command acknowledgements are saved to `logs/hardware/live_command_ack.csv`;
+`logs/hardware/live_ack_status.csv` records every module's ACK/missing status and
+consecutive miss count for each resolved command, including partial replies;
 hybrid head IMU readings use `logs/hardware/live_head.csv`.
 
 The old Python sender points to 10.49.2.223 and its active feedback function
