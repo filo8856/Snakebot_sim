@@ -118,6 +118,10 @@ Added
 Changed
 ^^^^^^^
 
+- Live Snakebot continuous commands now wait 50 ms after all five ESP
+  acknowledgements before advancing and sending another complete angle frame.
+  The configurable hold preserves 3x scaling and existing burst playback spacing.
+
 - Restored optional timestamped Snakebot motion bursts via ``--burst-size``,
   retaining continuous commands by default, 3x angle scaling, and all-five-ESP
   acknowledgements.

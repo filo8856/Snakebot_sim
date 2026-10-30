@@ -225,6 +225,26 @@ def test_early_feedback_does_not_queue_past_initial_execution_time(tmp_path):
     bridge.close()
 
 
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_post_command_hold_covers_execution_even_with_early_feedback(tmp_path, dry_run):
+  bridge, client, now = connected_bridge(
+    tmp_path, post_command_delay=0.05, dry_run=dry_run
+  )
+  try:
+    bridge.send([[0.0, 0.0]] * 5)
+    if not dry_run:
+      bridge._on_feedback(client, None, feedback_message())
+    assert not bridge.poll()
+    now[0] = 11.049
+    assert not bridge.poll()
+    now[0] = 11.051
+    assert bridge.poll()
+    if dry_run:
+      client.publish.assert_not_called()
+  finally:
+    bridge.close()
+
+
 def test_viewer_remains_responsive_while_waiting_and_pauses_on_fault(tmp_path):
   bridge, client, now = connected_bridge(tmp_path)
   try:

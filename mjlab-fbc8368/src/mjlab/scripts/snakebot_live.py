@@ -32,6 +32,8 @@ class LiveSnakebotConfig(MpuKeyboardConfig):
   """simulation mirrors the model; imu-hybrid additionally feeds physical IMUs to RL."""
   angle_scale: float = 3.0
   """Hardware angle-offset multiplier; 3x gives roughly +/-15 degrees at the servos."""
+  post_command_delay: float = 0.05
+  """Wait 50 ms after all five command acknowledgements before the next live frame."""
   burst_size: int = 1
   """Simulation frames per burst; each frame contains ten angles. Use 1 for continuous."""
   burst_frame_interval: float = 0.05
@@ -162,6 +164,9 @@ def run_live(cfg: LiveSnakebotConfig) -> None:
     )
     print(
       f"Hardware angle scale: {cfg.angle_scale:g}x; servo limits {cfg.servo_min}-{cfg.servo_max} degrees."
+    )
+    print(
+      f"Continuous commands wait {cfg.post_command_delay * 1000:g} ms after all five acknowledgements."
     )
     if cfg.mode == "imu-hybrid":
       print(

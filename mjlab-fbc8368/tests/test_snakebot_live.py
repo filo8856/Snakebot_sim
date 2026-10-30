@@ -90,6 +90,8 @@ def test_uploaded_firmware_contract_all_five_modules(tmp_path):
       reply(bridge, command, module)
     assert not bridge.poll()
     reply(bridge, command, "ESP_02")
+    assert not bridge.poll()
+    now[0] += 0.051
     assert bridge.poll()
     snapshots = bridge.fresh_samples()
     assert tuple(s.module_id for s in snapshots) == bridge.cfg.module_ids
@@ -118,6 +120,8 @@ def test_delayed_reply_from_previous_process_cannot_acknowledge_a_new_request(tm
     assert bridge.latest_samples is None
     for module in bridge.cfg.module_ids:
       reply(bridge, command, module)
+    assert not bridge.poll()
+    now[0] += 0.051
     assert bridge.poll()
   finally:
     bridge.close()
@@ -151,6 +155,9 @@ def test_misidentified_esp_and_missing_module_fail_clearly(tmp_path):
     {"angle_scale": 0.0},
     {"angle_scale": math.inf},
     {"angle_scale": math.nan},
+    {"post_command_delay": -0.05},
+    {"post_command_delay": math.inf},
+    {"post_command_delay": math.nan},
     {"module_ids": ("ESP_01", "ESP_02", "ESP_03", "ESP_04", "OTHER")},
     {"topic": "too-long/" * 40},
   ],
@@ -181,6 +188,8 @@ def test_simulation_streams_without_any_connected_mpu(tmp_path):
       reply(bridge, first, module, sensor_valid=False)
     assert not bridge.poll()  # Still requires all five command acknowledgements.
     reply(bridge, first, "ESP_05", sensor_valid=False)
+    assert not bridge.poll()
+    now[0] += 0.051
     assert bridge.poll()
     with bridge.cfg.ack_csv.open() as stream:
       rows = list(csv.DictReader(stream))
@@ -219,6 +228,8 @@ def test_simulation_acknowledgements_need_no_imu_fields(tmp_path):
           payload=json.dumps(data).encode(),
         ),
       )
+    assert not bridge.poll()
+    now[0] += 0.051
     assert bridge.poll()
   finally:
     bridge.close()
@@ -243,6 +254,33 @@ def test_scale_changes_offsets_without_scaling_neutral_and_keeps_limits():
   calibrated = replace(cfg, neutral_angles=(100, 80))
   assert servo_payload_data([[4.0, -4.0]] * 5, calibrated)["ESP_01"] == [112, 68]
   assert servo_payload_data([[100.0, -100.0]] * 5, cfg)["ESP_01"] == [115, 65]
+
+
+def test_next_frame_waits_fifty_ms_after_last_module_acknowledges(tmp_path):
+  bridge, client, now = make_bridge(tmp_path)
+  try:
+    assert bridge.cfg.post_command_delay == 0.05
+    command = bridge.send([[0.0, 0.0]] * 5)
+    now[0] += 1.2
+    for module in bridge.cfg.module_ids[:4]:
+      reply(bridge, command, module, sensor_valid=False)
+    assert not bridge.poll()
+    now[0] += 0.2  # A slow fifth ESP starts the hold later than the first four.
+    reply(bridge, command, "ESP_05", sensor_valid=False)
+    assert not bridge.poll()
+    now[0] += 0.049
+    assert not bridge.poll()
+    with pytest.raises(RuntimeError):
+      bridge.send([[5.16, -5.16]] * 5)
+    assert client.publish.call_count == 1
+    now[0] += 0.002
+    assert bridge.poll()
+    # Polling repeatedly must not restart the hold timer.
+    assert bridge.poll()
+    bridge.send([[5.16, -5.16]] * 5)
+    assert client.publish.call_count == 2
+  finally:
+    bridge.close()
 
 
 def test_live_launcher_selects_continuous_viewer_without_running_simulation(

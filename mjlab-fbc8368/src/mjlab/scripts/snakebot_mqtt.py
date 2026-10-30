@@ -46,6 +46,8 @@ class MqttKeyboardConfig(KeyboardConfig):
   """Schedule the first command this many seconds ahead, as in the sender."""
   command_delay: float = 0.05
   """Schedule later commands this many seconds ahead, using Unix milliseconds."""
+  post_command_delay: float = 0.0
+  """Hold after execution/acknowledgement before allowing the next frame, seconds."""
   require_feedback: bool = True
   feedback_topic: str = "servos/ESP_01/feedback"
   feedback_timeout: float = 5.0
@@ -87,7 +89,7 @@ def validate_mqtt_config(cfg: MqttKeyboardConfig) -> None:
     value = getattr(cfg, name)
     if not math.isfinite(value) or value <= 0:
       raise ValueError(f"{name} must be finite and greater than zero")
-  for name in ("initial_delay", "command_delay"):
+  for name in ("initial_delay", "command_delay", "post_command_delay"):
     value = getattr(cfg, name)
     if not math.isfinite(value) or value < 0:
       raise ValueError(f"{name} must be finite and non-negative")
@@ -254,6 +256,9 @@ class MqttBridge:
     if feedback is not None and pending is not None:
       self._validate_feedback(feedback, pending)
       self._record_feedback(feedback, pending)
+      self._next_send = max(
+        self._next_send, self._clock() + self.cfg.post_command_delay
+      )
       pending = None
     if pending is not None:
       if self._clock() - pending[2] > self.cfg.feedback_timeout:
@@ -287,7 +292,9 @@ class MqttBridge:
         raise RuntimeError(f"Failed to publish command #{self._request_id}")
     # An early acknowledgement must not queue a second command ahead of the
     # first one's execution time (particularly the initial one-second delay).
-    self._next_send = self._clock() + max(self.cfg.publish_interval, delay)
+    self._next_send = self._clock() + max(
+      self.cfg.publish_interval, delay + self.cfg.post_command_delay
+    )
     print(f"{'DRY RUN' if self.cfg.dry_run else 'MQTT'} {json.dumps(payload)}")
     return payload
 

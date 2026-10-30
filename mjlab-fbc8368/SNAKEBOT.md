@@ -344,12 +344,19 @@ message contains `request_id`, a future Unix-millisecond `ts`, and all five
 frame at a time, containing all ten servo angles. All five ESPs must acknowledge the
 initial neutral hold before the model starts advancing.
 
-In continuous mode, the sender waits for matching acknowledgements and the
-configured publish interval before advancing the model and sending the next frame. Actual update
+In continuous mode, the sender waits for matching acknowledgements from all five
+ESPs, then holds for another **50 ms** before advancing the model and sending
+the next frame. This delay applies once per complete set of ten servo targets,
+so all five modules stay together. Configure it with `--post-command-delay 0.05`
+(seconds). The configured publish interval also applies. Actual update
 rate depends on simulation throughput, command scheduling, and network latency.
 WASD changes apply when the model next advances; no frames are buffered into
 batches. Space pauses new commands, and closing the viewer disconnects MQTT.
 A command already sent may still execute at its scheduled timestamp.
+
+The 50 ms hold gives the servos time to move; it does not measure or guarantee
+arrival at the requested angles. No ESP `main.cpp` change is required. Keyboard
+input and rendering remain responsive during the wait.
 
 Defaults and tuning:
 
@@ -378,6 +385,12 @@ During burst playback, WASD changes affect the next batch. Space and closing the
 viewer stop future batches; they cannot cancel commands already queued on the
 ESPs. A 100-frame batch takes about five seconds to finish. Reset is unavailable
 while a batch is playing. Hybrid mode always uses continuous feedback.
+
+Burst playback keeps its existing 50 ms spacing between scheduled frames;
+`--post-command-delay` controls the acknowledgement hold in continuous mode,
+including the initial neutral command before a burst is recorded. Batch upload
+remains fast; adding sleeps between upload packets would delay delivery rather
+than ensure movement completion.
 
 Simulation mode requires no MPU connection: `sensor_valid: false` is accepted
 as part of an otherwise correctly identified command acknowledgement. Every
