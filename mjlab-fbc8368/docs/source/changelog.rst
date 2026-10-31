@@ -153,6 +153,10 @@ Changed
 Fixed
 ^^^^^
 
+- Pipelined Snakebot viewers report a persistent hardware fault and pause once,
+  keeping the original error visible instead of repeating the pause message on
+  every display tick.
+
 - Snakebot keyboard/live viewers now select WSLg D3D12 GPU rendering instead
   of silently using CPU llvmpipe, while respecting explicit renderer overrides.
   Physics, policy behavior, and hardware command timing are unchanged.

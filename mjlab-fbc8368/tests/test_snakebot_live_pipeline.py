@@ -286,3 +286,41 @@ def test_viewer_captures_while_playback_is_pending_and_finishes_bounded_capture(
   bridge.pause_uploads.assert_called_with(True)
   viewer.step_simulation()
   assert bridge.enqueue_frame.call_count == 2
+
+
+def test_pipeline_fault_pauses_once_and_keeps_the_original_error_visible(
+  capsys,
+  monkeypatch,
+):
+  bridge = MagicMock()
+  bridge.cfg = PipelineSnakebotConfig()
+  bridge.check_errors.side_effect = RuntimeError("ESP_03 missed 10 consecutive ACKs")
+  env = MagicMock()
+  viewer = PipelineGoalViewer(env, MagicMock(), bridge=bridge)
+  monkeypatch.setattr(viewer, "sync_env_to_viewer", MagicMock())
+  monkeypatch.setattr(viewer, "sync_viewer_to_env", MagicMock())
+  for _ in range(20):
+    viewer.tick()
+  output = capsys.readouterr().out
+  assert output.count("Hardware stream stopped:") == 1
+  assert output.count("Pipeline capture/uploads paused;") == 1
+  assert "ESP_03 missed 10 consecutive ACKs" in output
+  bridge.check_errors.assert_called_once()
+  bridge.enqueue_frame.assert_not_called()
+  assert viewer._hardware_fault and viewer._is_paused
+  viewer.resume()
+  assert viewer._is_paused  # An actual fault still requires a restart.
+  bridge.pause_uploads.assert_called_once_with(True)
+
+
+def test_pipeline_repeated_pause_calls_are_silent_until_resumed(capsys):
+  bridge = MagicMock()
+  bridge.cfg = PipelineSnakebotConfig()
+  viewer = PipelineGoalViewer(MagicMock(), MagicMock(), bridge=bridge)
+  viewer.pause()
+  viewer.pause()
+  viewer.pause()
+  assert capsys.readouterr().out.count("Pipeline capture/uploads paused;") == 1
+  viewer.resume()
+  viewer.pause()
+  assert capsys.readouterr().out.count("Pipeline capture/uploads paused;") == 1

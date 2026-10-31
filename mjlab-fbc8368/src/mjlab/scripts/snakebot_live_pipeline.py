@@ -319,10 +319,11 @@ class PipelineGoalViewer(MqttGoalViewer):
 
   def tick(self) -> bool:
     self._process_actions()
-    try:
-      self.bridge.check_errors()
-    except RuntimeError as exc:
-      self._stop_on_fault(exc)
+    if not self._hardware_fault:
+      try:
+        self.bridge.check_errors()
+      except RuntimeError as exc:
+        self._stop_on_fault(exc)
     # Generate as fast as possible, not at the simulation's wall-clock playback
     # rate. The sender independently enforces physical execution timestamps.
     if not self._is_paused and not self._hardware_fault and self.bridge.can_capture:
@@ -342,11 +343,13 @@ class PipelineGoalViewer(MqttGoalViewer):
     return True
 
   def pause(self) -> None:
+    was_paused = self._is_paused
     self.bridge.pause_uploads(True)
     super().pause()
-    print(
-      "Pipeline capture/uploads paused; commands already on the ESPs still execute."
-    )
+    if not was_paused:
+      print(
+        "Pipeline capture/uploads paused; commands already on the ESPs still execute."
+      )
 
   def resume(self) -> None:
     super().resume()
