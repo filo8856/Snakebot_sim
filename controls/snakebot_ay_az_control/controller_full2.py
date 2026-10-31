@@ -13,34 +13,86 @@ from matplotlib.animation import FuncAnimation
 from scipy.interpolate import splprep, splev
 from copy import deepcopy
 import keyboard
+import csv
+import threading
 
 # --- MQTT CONFIGURATION ---
-MQTT_BROKER = "10.52.183.173"  # CHANGE TO YOUR BROKER IP
+MQTT_BROKER = "10.220.249.223"  # CHANGE TO YOUR BROKER IP
 MQTT_PORT = 1883
 MQTT_TOPIC = "servos/sync_command"
+ESP_IDS = tuple(f"ESP_{i:02d}" for i in range(1, 6))
+
+# Reverse the travelling gait by sending its frames in reverse time order.
+# False restores the original direction; servo calibration stays unchanged.
+REVERSE_PLAYBACK = True
+
+# Commands address all five ESPs; feedback is currently tracked for ESP_01.
+FEEDBACK_TOPIC = "servos/ESP_01/feedback"
+RESPONSE_TIMEOUT = 5.0
+
+response_event = threading.Event()
+response_lock = threading.Lock()
+
+expected_request_id = None
+received_feedback = None
+next_request_id = 1
+
+CSV_FILE = "mpu_feedback.csv"
+
+
+def on_feedback_message(client, userdata, msg):
+    global received_feedback
+
+    try:
+        data = json.loads(msg.payload.decode())
+        request_id = data.get("request_id")
+
+        with response_lock:
+            if request_id != expected_request_id:
+                return
+
+            received_feedback = data
+            response_event.set()
+
+    except (ValueError, TypeError):
+        print("Invalid feedback received.")
+
 INITIAL_DELAY = 1
-PUBLISH_INTERVAL = 0.08  # <--- NEW: Seconds to wait between sending commands (Prevents ESP queue overflow)
+PUBLISH_INTERVAL = 0.03  # <--- NEW: Seconds to wait between sending commands (Prevents ESP queue overflow)
 
 def on_connect(client, userdata, flags, reason_code, properties):
     if reason_code == 0:
         print(f"✓ Connected successfully to {MQTT_BROKER}")
+        client.subscribe(FEEDBACK_TOPIC)
+        print(f"Subscribed to {FEEDBACK_TOPIC}")
     else:
         print(f"✗ Connection failed with code: {reason_code}")
 
 def on_disconnect(client, userdata, disconnect_flags, reason_code, properties):
     print(f"Disconnected with reason code: {reason_code}")
 
+def build_movement_data(calculated_pairs):
+    if len(calculated_pairs) != len(ESP_IDS):
+        raise ValueError(
+            f"Expected {len(ESP_IDS)} angle pairs for ESP_01 through ESP_05, "
+            f"got {len(calculated_pairs)}"
+        )
+    return dict(zip(ESP_IDS, calculated_pairs))
+
+
 def send_movement(calculated_pairs, target_timestamp_ms):
     """
-    Dynamically maps pairs to ESP_01, ESP_02, ESP_03, etc., to preserve all segments.
+    Maps five angle pairs to ESP_01 through ESP_05.
     Takes an exact target timestamp in milliseconds.
     """
-    data_payload = {}
-    for i, pair in enumerate(calculated_pairs):
-        esp_key = f"ESP_{i+1:02d}"
-        data_payload[esp_key] = pair
+    global next_request_id
+
+    data_payload = build_movement_data(calculated_pairs)
+    request_id = next_request_id
+    next_request_id += 1
 
     payload = {
+        "request_id": request_id,
         "ts": target_timestamp_ms,
         "data": data_payload
     }
@@ -48,6 +100,98 @@ def send_movement(calculated_pairs, target_timestamp_ms):
     result = client.publish(MQTT_TOPIC, json.dumps(payload), qos=0)
     if result.rc != mqtt.MQTT_ERR_SUCCESS:
         print(f"✗ Failed to send message")
+
+
+def send_command_wait_feedback(client, calculated_pairs, target_timestamp_ms):
+    global expected_request_id, received_feedback, next_request_id
+
+    data_payload = build_movement_data(calculated_pairs)
+    request_id = next_request_id
+    next_request_id += 1
+
+    with response_lock:
+        expected_request_id = request_id
+        received_feedback = None
+        response_event.clear()
+
+    payload = {
+        "request_id": request_id,
+        "ts": target_timestamp_ms,
+        "data": data_payload
+    }
+
+    info = client.publish(
+        MQTT_TOPIC,
+        json.dumps(payload),
+        qos=0
+    )
+
+    if info.rc != mqtt.MQTT_ERR_SUCCESS:
+        raise RuntimeError(f"Failed to publish command #{request_id}")
+
+    info.wait_for_publish()
+
+    print(
+        f"Sent command #{request_id} | "
+        f"Target time: {target_timestamp_ms} | "
+        f"Angles: {calculated_pairs}"
+    )
+
+    if not response_event.wait(timeout=RESPONSE_TIMEOUT):
+        raise TimeoutError(
+            f"No matching feedback for command #{request_id} "
+            f"within {RESPONSE_TIMEOUT} seconds. Stopping."
+        )
+
+    with response_lock:
+        feedback = received_feedback.copy() if received_feedback else None
+
+    if feedback is None:
+        raise RuntimeError("Feedback data is missing.")
+
+    if not feedback.get("sensor_valid", False):
+        print(
+            f"Warning: ESP_01 MPU readings invalid for command "
+            f"#{request_id}; continuing movement without logging this sample."
+        )
+        return feedback
+
+    fields = [
+        "request_id", "command_ts",
+        "roll", "pitch", "gx", "gy", "gz"
+    ]
+
+    file_exists = False
+    try:
+        with open(CSV_FILE, "r", newline="", encoding="utf-8"):
+            file_exists = True
+    except FileNotFoundError:
+        pass
+
+    with open(CSV_FILE, "a", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fields)
+
+        if not file_exists:
+            writer.writeheader()
+
+        writer.writerow({
+            "request_id": request_id,
+            "command_ts": feedback.get("command_ts"),
+            "roll": feedback["roll"],
+            "pitch": feedback["pitch"],
+            "gx": feedback["gx"],
+            "gy": feedback["gy"],
+            "gz": feedback["gz"]
+        })
+
+    print(
+        f"Feedback #{request_id} | "
+        f"Roll: {feedback['roll']:.2f}° | "
+        f"Pitch: {feedback['pitch']:.2f}°"
+    )
+
+    return feedback
+
 
 # spline_func should be a function that returns x, y, z given a parameter `u`
 def spline_func(u):
@@ -71,7 +215,7 @@ colors =['red','blue']
 num_segments=6
 req_length = 1.14
 req_amplitude_z = 0.4
-req_amplitude_y = 0.4
+req_amplitude_y = 0
 A1=0
 num_path_points = 0
 R=req_length/2
@@ -79,7 +223,7 @@ approximation_circle_dist=0.17
 
 path_points_x = [0,3,4,6]
 path_points_y = [0,3,4,6]
-frequency = 3 # Math frequency for the sine wave
+frequency =2# Math frequency for the sine wave
 
 # Convert lists to a numpy array
 points = np.array([path_points_x, path_points_y])
@@ -110,8 +254,7 @@ ax.set_box_aspect([1, 1, 1])
 
 # Initial sine wave plot in 3D
 phase = 0
-multiplier = 1.5*u_new 
-# multiplier = 1 # multiplier should be constant for catterpillar
+multiplier = 1.5*u_new
 x_sine_wave = A1 + x_new + multiplier*req_amplitude_y * np.sin(2 * np.pi *frequency * u_new+1+phase) * dx_normalized
 y_sine_wave = A1 + y_new + multiplier*req_amplitude_y * np.sin(2 * np.pi *frequency * u_new+1+phase) * dy_normalized
 z_wave = req_amplitude_z * np.abs(np.sin(2 * np.pi *frequency * u_new+1+phase))
@@ -131,7 +274,6 @@ answers_per_iteration.append([0,0,0])
 once =True
 phaseshiftercount=0
 kitneAngleChahiye=200
-'''try this for serpentine and catterpillar'''
 while(phaseshiftercount<kitneAngleChahiye):
     for i in range(len(x_sine_wave)):
         if(sqrt((x_sine_wave[i]-answers_per_iteration[-1][0])**2+(y_sine_wave[i]-answers_per_iteration[-1][1])**2+(z_wave[i]-answers_per_iteration[-1][2])**2)>req_length):
@@ -168,7 +310,6 @@ while(phaseshiftercount<kitneAngleChahiye):
     z_wave = req_amplitude_z * np.abs(np.sin(2 * np.pi *frequency * u_new+1+phase))
     phaseshiftercount+=1
 
-'''try this for sidewinding'''
 # while(offset<accuracylevel):
 #     for i in range(offset,len(x_sine_wave)):
 #         if(sqrt((x_sine_wave[i]-answers_per_iteration[-1][0])**2+(y_sine_wave[i]-answers_per_iteration[-1][1])**2+(z_wave[i]-answers_per_iteration[-1][2])**2)>req_length):
@@ -225,6 +366,11 @@ client = mqtt.Client(callback_api_version=mqtt.CallbackAPIVersion.VERSION2)
 client.on_connect = on_connect
 client.on_disconnect = on_disconnect
 
+client.message_callback_add(
+    FEEDBACK_TOPIC,
+    on_feedback_message
+)
+
 print(f"Attempting to connect to MQTT broker at {MQTT_BROKER}:{MQTT_PORT}...")
 try:
     client.connect(MQTT_BROKER, MQTT_PORT, 60)
@@ -240,11 +386,11 @@ tempcount = 1
 wantToSend=True
 
 # Track the exact start time for the first batch of angles
-next_execution_time = time.time() + (4 * INITIAL_DELAY)
+next_execution_time = time.time() + 1.0
 
 try:
     while(wantToSend):
-        for angles_set in angles_real:  
+        for angles_set in (reversed(angles_real) if REVERSE_PLAYBACK else angles_real):
             calculated_pairs = []
             
             for angle_pair in angles_set:  
@@ -253,7 +399,7 @@ try:
                 angle_2 = atan(R*sin((180-angle_pair[1])*np.pi/180)/(R*cos((180-angle_pair[1])*np.pi/180)-approximation_circle_dist))*180/np.pi
                 
                 # Format exactly as before: min 70, max 110 constraints
-                s1 = min(115,max(90-int(angle_1),65))#for catterpillar replace angle 1 with 0 , since there should be no sideways movement, only vertical
+                s1 = min(115,max(90-int(angle_1),65))#this only for catterpillar design, for snake design it should be angle_1 instead of 0
                 s2 = min(115,max(90-int(angle_2),65))
                 calculated_pairs.append([s2, s1]) # Note the order swap to match (x,y) -> (servo1, servo2)
             
@@ -261,15 +407,20 @@ try:
             target_ts_ms = int(next_execution_time * 1000)
             
             # Publish via MQTT
-            send_movement(calculated_pairs, target_ts_ms)
-            print(f"Sent Target Time: {target_ts_ms}ms - Angles: {calculated_pairs} - Count: {tempcount}")
+            # Send one command and wait for its matching MPU feedback
+            send_command_wait_feedback(
+                client,
+                calculated_pairs,
+                target_ts_ms
+            )
+
+            next_execution_time = max(
+                next_execution_time + PUBLISH_INTERVAL,
+                time.time() + 0.05
+            )
+
+            tempcount += 1
             
-            # Increment timestamp target
-            next_execution_time += PUBLISH_INTERVAL 
-            
-            # Sleep physically to prevent ESP queue overflow
-            time.sleep(PUBLISH_INTERVAL)
-            tempcount+=1
             
             if(keyboard.is_pressed('a')):
                 print("paused")
