@@ -14,9 +14,11 @@ import tyro
 
 import mjlab
 from mjlab.scripts.snakebot_burst import BurstMqttBridge, QueuedFrame
+from mjlab.scripts.snakebot_gamepad import RightStickReader, right_stick_direction
 from mjlab.scripts.snakebot_keyboard import (
   KeyboardGoalViewer,
   module_joint_angles_deg,
+  move_keyboard_goal,
   run_keyboard,
 )
 from mjlab.scripts.snakebot_live import LiveSnakebotConfig
@@ -36,6 +38,16 @@ class PipelineSnakebotConfig(LiveSnakebotConfig):
   """Pace MQTT uploads at 10 ms instead of flooding the broker with whole batches."""
   capture_frame_rate: float = 30.0
   """Maximum display update rate; model capture runs as fast as the machine permits."""
+  gamepad: bool = True
+  """Enable a Windows/XInput right stick alongside WASD (also works from WSL)."""
+  gamepad_index: int = -1
+  """XInput slot 0-3; -1 automatically chooses the first connected controller."""
+  gamepad_speed: float = 0.4
+  """Target movement speed at full stick deflection, metres per wall-clock second."""
+  gamepad_deadzone: float = 0.25
+  """Radial stick dead zone (0-1); remaining range is rescaled proportionally."""
+  gamepad_stale_timeout: float = 0.25
+  """Ignore input when no fresh controller sample has arrived within this time."""
   ack_csv: Path = Path("logs/hardware/pipeline_command_ack.csv")
   ack_status_csv: Path = Path("logs/hardware/pipeline_ack_status.csv")
   all_feedback_jsonl: Path = Path("logs/hardware/pipeline_all_modules.jsonl")
@@ -65,6 +77,14 @@ class PipelineMqttBridge(BurstMqttBridge):
       raise ValueError("upload_interval must be positive and less than frame interval")
     if not math.isfinite(cfg.capture_frame_rate) or cfg.capture_frame_rate <= 0:
       raise ValueError("capture_frame_rate must be finite and positive")
+    if cfg.gamepad_index not in (-1, 0, 1, 2, 3):
+      raise ValueError("gamepad_index must be -1 (auto) or an XInput slot 0-3")
+    if not math.isfinite(cfg.gamepad_deadzone) or not 0 <= cfg.gamepad_deadzone < 1:
+      raise ValueError("gamepad_deadzone must be finite and between 0 and 1")
+    for name in ("gamepad_speed", "gamepad_stale_timeout"):
+      value = getattr(cfg, name)
+      if not math.isfinite(value) or value <= 0:
+        raise ValueError(f"{name} must be finite and positive")
     milliseconds = cfg.burst_frame_interval * 1000
     if not math.isclose(milliseconds, round(milliseconds), abs_tol=1e-6):
       raise ValueError("Pipeline frame intervals must use whole milliseconds")
@@ -287,6 +307,38 @@ class PipelineGoalViewer(MqttGoalViewer):
     self.frame_time = 1.0 / self.frame_rate
     self._next_render = 0.0
     self._capture_limit: int | None = None
+    self._gamepad: RightStickReader | None = None
+    self._last_gamepad_tick = time.monotonic()
+
+  def setup(self) -> None:
+    super().setup()
+    if self.bridge.cfg.gamepad:
+      reader = RightStickReader(
+        self.bridge.cfg.gamepad_index, self.bridge.cfg.gamepad_stale_timeout
+      )
+      try:
+        reader.start()
+        self._gamepad = reader
+        print("Right stick: up/down = W/S, left/right = A/D; WASD remains active.")
+      except (OSError, RuntimeError) as exc:
+        reader.close()
+        print(f"Gamepad unavailable: {exc}. WASD remains available.")
+    self._last_gamepad_tick = time.monotonic()
+
+  def _update_gamepad(self) -> None:
+    now = time.monotonic()
+    elapsed = min(0.1, max(0.0, now - self._last_gamepad_tick))
+    self._last_gamepad_tick = now
+    if self._gamepad is None or self._hardware_fault:
+      return
+    sample = self._gamepad.read()
+    if sample is None:
+      return
+    forward, left = right_stick_direction(*sample, self.bridge.cfg.gamepad_deadzone)
+    if forward == 0.0 and left == 0.0:
+      return
+    distance = self.bridge.cfg.gamepad_speed * elapsed
+    move_keyboard_goal(self.env.unwrapped, forward * distance, left * distance)
 
   def run(self, num_steps: int | None = None) -> None:
     self._capture_limit = num_steps
@@ -324,6 +376,7 @@ class PipelineGoalViewer(MqttGoalViewer):
         self.bridge.check_errors()
       except RuntimeError as exc:
         self._stop_on_fault(exc)
+    self._update_gamepad()
     # Generate as fast as possible, not at the simulation's wall-clock playback
     # rate. The sender independently enforces physical execution timestamps.
     if not self._is_paused and not self._hardware_fault and self.bridge.can_capture:
@@ -361,6 +414,12 @@ class PipelineGoalViewer(MqttGoalViewer):
       print("Pause and wait for queued commands/ACKs to drain before resetting.")
       return
     super().reset_environment()
+
+  def close(self) -> None:
+    if self._gamepad is not None:
+      self._gamepad.close()
+      self._gamepad = None
+    super().close()
 
 
 def run_pipeline(cfg: PipelineSnakebotConfig) -> None:

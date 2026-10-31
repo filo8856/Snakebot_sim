@@ -535,6 +535,50 @@ milliseconds. Per-module feedback and ACK status are written to
 `pipeline_ack_status.csv`. This launcher uses simulation observations and does
 not support the experimental IMU-hybrid mode.
 
+### Right joystick target control
+
+The pipelined launcher also accepts the connected Windows/XInput controller's
+**right thumbstick**, enabled by default alongside WASD:
+
+| Right stick | Target movement |
+| --- | --- |
+| Up / down | Forward / backward along the whole snake's tail-to-head axis |
+| Left / right | Left / right perpendicular to the whole snake's axis |
+| Released / centred | Keep the target at its current position |
+
+The default full-deflection target speed is **0.4 m/s**, with a **25% radial
+dead zone** to prevent drift. Partial deflection gives slower movement, and
+diagonal movement has the same maximum speed as straight movement. Stick
+movement uses wall-clock time and caps each update to 100 ms to avoid a large
+target jump after a delayed display update. Releasing the stick holds the target
+in place; the policy continues following it. As with WASD, already captured or
+queued frames add steering delay.
+
+The controller is read through Windows XInput even when the simulation runs
+inside WSL, so USB forwarding and additional Python packages are unnecessary.
+The startup message identifies the connected XInput slot. Controller detection
+automatically reconnects; disconnected or stale input (250 ms without a sample)
+stops further stick-driven target edits while WASD remains available. The
+reader exits when the simulation closes. Input from the stick can edit the
+target while manually paused, like WASD; hardware faults suppress stick edits.
+Disconnecting the controller does not cancel motion already queued on the ESPs.
+
+```bash
+# Same pipelined command: right stick is detected automatically.
+uv run --no-sync python -m mjlab.scripts.snakebot_live_pipeline
+# Adjust target speed and dead zone.
+uv run --no-sync python -m mjlab.scripts.snakebot_live_pipeline --gamepad-speed 0.3 --gamepad-deadzone 0.25
+# Choose XInput slot 1 explicitly (default -1 chooses the first connected slot).
+uv run --no-sync python -m mjlab.scripts.snakebot_live_pipeline --gamepad-index 1
+# Keyboard only.
+uv run --no-sync python -m mjlab.scripts.snakebot_live_pipeline --gamepad False
+```
+
+Right-stick axes follow Microsoft's
+[XInput gamepad convention](https://learn.microsoft.com/en-us/windows/win32/api/xinput/ns-xinput-xinput_gamepad).
+Generic DirectInput-only devices need an XInput-compatible driver/mapping; the
+Xbox-compatible controller detected on this laptop is supported directly.
+
 ## Viewer performance on WSL
 
 The keyboard and both live launchers automatically select WSLg's D3D12 hardware

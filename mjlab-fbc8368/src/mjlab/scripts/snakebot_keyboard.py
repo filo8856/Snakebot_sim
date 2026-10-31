@@ -84,6 +84,16 @@ def snake_planar_axes(env) -> tuple[torch.Tensor, torch.Tensor]:
   return forward_xy, left_xy
 
 
+def move_keyboard_goal(env, forward_distance: float, left_distance: float) -> None:
+  """Move a target in the shared whole-snake frame and reset progress tracking."""
+  with torch.no_grad():
+    forward_xy, left_xy = snake_planar_axes(env)
+    env._loco_goal_pos += forward_distance * forward_xy + left_distance * left_xy
+    env._loco_prev_dist[:] = torch.linalg.vector_norm(
+      env._loco_goal_pos - _robot_com_xy(env.scene["robot"]), dim=1
+    )
+
+
 def reset_keyboard_goal(env, env_ids, distance: float) -> None:
   """Place the goal ahead of the COM along the whole snake's horizontal axis."""
   # Reset events run after writing joint/root positions and before the normal
@@ -183,14 +193,9 @@ class KeyboardGoalViewer(NativeMujocoViewer):
       print_module_joint_angles(env)
       return True
     elif name == "move_goal":
-      with torch.no_grad():
-        forward_xy, left_xy = snake_planar_axes(env)
-        delta = self.goal_step * (direction[0] * forward_xy + direction[1] * left_xy)
-        env._loco_goal_pos += delta
-        # Goal edits are not physical progress and must not spike the reward.
-        env._loco_prev_dist[:] = torch.linalg.vector_norm(
-          env._loco_goal_pos - _robot_com_xy(env.scene["robot"]), dim=1
-        )
+      move_keyboard_goal(
+        env, self.goal_step * direction[0], self.goal_step * direction[1]
+      )
     elif name == "recenter_goal":
       with torch.no_grad():
         reset_keyboard_goal(env, None, self.initial_distance)

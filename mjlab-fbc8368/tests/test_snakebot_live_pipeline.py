@@ -250,6 +250,11 @@ def test_sender_worker_records_publish_failure_and_stops(tmp_path):
     {"capture_frame_rate": 0.0},
     {"mode": "imu-hybrid"},
     {"burst_frame_interval": 0.1005},
+    {"gamepad_index": 4},
+    {"gamepad_deadzone": 1.0},
+    {"gamepad_deadzone": math.nan},
+    {"gamepad_speed": 0.0},
+    {"gamepad_stale_timeout": 0.0},
   ],
 )
 def test_invalid_pipeline_settings_are_rejected(settings):

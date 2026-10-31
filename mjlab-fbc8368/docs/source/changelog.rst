@@ -17,6 +17,10 @@ Upcoming version (not yet released)
 Added
 ^^^^^
 
+- Pipelined Snakebot target control through the Windows/XInput right thumbstick,
+  including WSL input bridging, whole-body axes shared with WASD, proportional
+  speed, a radial dead zone, and stale/disconnected-input handling.
+
 - Separate ``snakebot_live_pipeline`` launcher that captures future policy
   frames while queued hardware motion plays. Paced background uploads use
   per-ESP execution progress to bound queue occupancy, retain ordered ACK-miss
