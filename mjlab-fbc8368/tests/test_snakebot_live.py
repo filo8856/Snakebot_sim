@@ -153,6 +153,7 @@ def test_misidentified_esp_and_missing_module_fail_clearly(tmp_path):
   "settings",
   [
     {"max_steps": 0},
+    {"mode": "imu-hybrid", "ignore_ack_errors": True},
     {"max_missed_acks": 0},
     {"max_missed_acks": -1},
     {"max_missed_acks": True},
@@ -246,6 +247,32 @@ def test_hybrid_mode_still_rejects_invalid_imu(tmp_path):
     command = bridge.send([[0.0, 0.0]] * 5)
     reply(bridge, command, "ESP_01", sensor_valid=False)
     with pytest.raises(RuntimeError, match="Invalid IMU feedback from ESP_01"):
+      bridge.poll()
+  finally:
+    bridge.close()
+
+
+def test_ignore_ack_errors_streams_without_replies_or_ack_logs(tmp_path):
+  bridge, client, now = make_bridge(
+    tmp_path, ignore_ack_errors=True, feedback_timeout=0.01, max_missed_acks=1
+  )
+  try:
+    for frame in range(20):
+      command = bridge.send([[1.0, -1.0]] * 5)
+      # Even a matching request with an invalid ESP identity must be ignored.
+      reply(bridge, command, "ESP_03", esp_id="OTHER")
+      now[0] += 0.02
+      assert not bridge.poll()  # Preserve timestamp and post-command spacing.
+      now[0] += 1.04 if frame == 0 else 0.09
+      assert bridge.poll()  # No ACK timeout or hold waiting for a reply.
+    assert client.publish.call_count == 20
+    assert bridge.latest_samples is None
+    assert not bridge.cfg.ack_csv.exists()
+    assert not bridge.cfg.ack_status_csv.exists()
+    assert not bridge.cfg.all_feedback_jsonl.exists()
+    assert not any(bridge.missed_ack_streaks.values())
+    client.on_disconnect(client, None, None, 1, None)
+    with pytest.raises(RuntimeError, match="disconnected"):
       bridge.poll()
   finally:
     bridge.close()

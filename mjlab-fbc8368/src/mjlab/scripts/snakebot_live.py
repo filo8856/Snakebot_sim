@@ -42,6 +42,8 @@ class LiveSnakebotConfig(MpuKeyboardConfig):
   """Upload lead time before the first queued frame executes."""
   max_missed_acks: int = 10
   """Pause simulation mode after this many consecutive missed commands per ESP."""
+  ignore_ack_errors: bool = False
+  """Ignore all command ACKs and their errors/waits in simulation mode."""
   feedback_csv: Path = Path("logs/hardware/live_head.csv")
   all_feedback_jsonl: Path = Path("logs/hardware/live_all_modules.jsonl")
   ack_csv: Path = Path("logs/hardware/live_command_ack.csv")
@@ -59,6 +61,8 @@ class FirmwareMqttBridge(AllModuleMpuBridge):
 
   def __init__(self, cfg: LiveSnakebotConfig, **kwargs):
     super().__init__(cfg, **kwargs)
+    if cfg.ignore_ack_errors and cfg.mode != "simulation":
+      raise ValueError("ignore_ack_errors requires simulation mode; hybrid needs IMUs")
     if set(cfg.module_ids) != {f"ESP_{i:02d}" for i in range(1, 6)}:
       raise ValueError("This firmware profile requires ESP_01 through ESP_05")
     if cfg.max_steps is not None and cfg.max_steps <= 0:
@@ -86,6 +90,8 @@ class FirmwareMqttBridge(AllModuleMpuBridge):
     self.missed_ack_streaks = {name: 0 for name in cfg.module_ids}
 
   def _on_feedback(self, client, userdata, msg):
+    if self.cfg.ignore_ack_errors:
+      return
     module = self._topics.get(msg.topic)
     if module is None:
       return
@@ -230,6 +236,13 @@ class FirmwareMqttBridge(AllModuleMpuBridge):
     self._record_ack_outcome(request_id, timestamp, samples)
 
   def poll(self) -> bool:
+    if self.cfg.ignore_ack_errors:
+      # Time-based command spacing still applies; no reply is required or
+      # recorded as successful. Transport errors remain fatal in parent poll().
+      with self._lock:
+        self._pending = None
+        self._feedback = None
+      return super().poll()
     expired = None
     if self.cfg.mode == "simulation":
       with self._lock:
@@ -269,14 +282,12 @@ def run_live(cfg: LiveSnakebotConfig) -> None:
       f"Head-to-tail ESP order: {', '.join(cfg.module_ids)}\n"
       "Servo 1 / pin 32: bottom; servo 2 / pin 33: top (existing sender order).\n"
       "WASD/arrows: move target | Space: pause/resume | J: angles | T: recenter\n"
-      "Received ACKs must match ESP IDs, request_id and command_ts."
+      f"Ignore acknowledgement errors: {cfg.ignore_ack_errors}."
     )
     print(
       f"Hardware angle scale: {cfg.angle_scale:g}x; servo limits {cfg.servo_min}-{cfg.servo_max} degrees."
     )
-    print(
-      f"Continuous commands hold {cfg.post_command_delay * 1000:g} ms after ACKs or a tolerated timeout."
-    )
+    print(f"Continuous post-command hold: {cfg.post_command_delay * 1000:g} ms.")
     if cfg.mode == "imu-hybrid":
       print(
         "Hybrid mode uses physical IMUs; joint state and position remain model estimates."
@@ -290,9 +301,12 @@ def run_live(cfg: LiveSnakebotConfig) -> None:
       return MpuGoalViewer(env, hybrid, *args, bridge=bridge, hybrid_policy=hybrid)
     bridge.start()
     print("SIMULATION ANGLES ONLY: MPU hardware and IMU readings are not required.")
-    print(
-      f"Missing ACKs are logged; pause after {cfg.max_missed_acks} consecutive misses per ESP."
-    )
+    if cfg.ignore_ack_errors:
+      print("ACK checks/waits disabled; playback assumes scheduled execution.")
+    else:
+      print(
+        f"Missing ACKs are logged; pause after {cfg.max_missed_acks} consecutive misses per ESP."
+      )
     # The initial neutral hold uses the same ACK timeout/miss policy as gait frames.
     bridge.send([[0.0, 0.0]] * 5)
     if use_bursts:

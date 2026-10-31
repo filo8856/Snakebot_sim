@@ -224,8 +224,11 @@ def test_pipeline_keeps_consecutive_miss_fault_and_prevents_further_production(
     bridge.close()
 
 
-def test_sender_worker_records_publish_failure_and_stops(tmp_path):
-  bridge, client, _, _ = fixture_bridge(tmp_path, burst_size=1)
+@pytest.mark.parametrize("ignore_ack_errors", [False, True])
+def test_sender_worker_records_publish_failure_and_stops(tmp_path, ignore_ack_errors):
+  bridge, client, _, _ = fixture_bridge(
+    tmp_path, burst_size=1, ignore_ack_errors=ignore_ack_errors
+  )
   try:
     bridge.enqueue_frame(TARGETS)
     client.publish.return_value = SimpleNamespace(rc=4)
@@ -235,6 +238,41 @@ def test_sender_worker_records_publish_failure_and_stops(tmp_path):
     assert not bridge._sender.is_alive()
     with pytest.raises(RuntimeError, match="Failed to publish pipeline"):
       bridge.check_errors()
+  finally:
+    bridge.close()
+
+
+def test_ignored_acks_pipeline_keeps_streaming_beyond_queue_capacity(tmp_path):
+  bridge, client, now, _ = fixture_bridge(tmp_path, ignore_ack_errors=True)
+  try:
+    for _ in range(100):
+      bridge.enqueue_frame(TARGETS)
+    # No ESP sends execution feedback, including for the initial neutral pose.
+    # Run longer than the queue and default ACK fault threshold would allow.
+    for _ in range(4000):
+      bridge.service_once()
+      if bridge.can_capture and bridge.captured_frames < 250:
+        bridge.enqueue_frame(TARGETS)
+      if bridge.captured_frames == 250:
+        bridge.finish_capture()
+      assert 0 <= bridge._occupancy() <= bridge.cfg.pipeline_queue_limit
+      if bridge.drained:
+        break
+      now[0] += 0.011
+    assert bridge.published_frames == 250
+    assert bridge.drained
+    commands = uploaded(client)
+    assert len(commands) == 250
+    assert bridge.underruns == 0
+    assert all(
+      b["ts"] - a["ts"] == 100 for a, b in zip(commands[:-1], commands[1:], strict=True)
+    )
+    acknowledge(bridge, commands[-1], esp_id="OTHER")
+    bridge.check_errors()
+    assert not any(bridge._executed.values())  # Assumptions never become real ACKs.
+    assert bridge.latest_samples is None
+    assert not bridge.cfg.ack_status_csv.exists()
+    assert not bridge.cfg.all_feedback_jsonl.exists()
   finally:
     bridge.close()
 

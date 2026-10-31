@@ -77,7 +77,7 @@ class BurstMqttBridge(FirmwareMqttBridge):
     with self._lock:
       self._burst_pending = (
         {}
-        if self.cfg.dry_run
+        if self.cfg.dry_run or self.cfg.ignore_ack_errors
         else {
           p["request_id"]: QueuedFrame(
             p, start + self.cfg.burst_lead_time + i * self.cfg.burst_frame_interval
@@ -117,6 +117,8 @@ class BurstMqttBridge(FirmwareMqttBridge):
     return payloads
 
   def _on_feedback(self, client, userdata, msg):
+    if self.cfg.ignore_ack_errors:
+      return
     try:
       data = json.loads(msg.payload.decode())
     except (ValueError, UnicodeDecodeError):

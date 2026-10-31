@@ -17,6 +17,11 @@ Upcoming version (not yet released)
 Added
 ^^^^^
 
+- Boolean ``--ignore-ack-errors True/False`` option (default False) for continuous,
+  burst, and pipelined Snakebot simulation-to-real launchers. Ignoring ACKs removes
+  reply waits and validation, uses scheduled pipeline queue progress, and retains
+  transport failures, command timing, scaling, and servo limits.
+
 - Pipelined Snakebot target control through the Windows/XInput right thumbstick,
   including WSL input bridging, whole-body axes shared with WASD, proportional
   speed, a radial dead zone, and stale/disconnected-input handling.

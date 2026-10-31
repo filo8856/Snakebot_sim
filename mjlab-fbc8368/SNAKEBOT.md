@@ -404,8 +404,9 @@ Simulation mode requires no MPU connection: `sensor_valid: false` is accepted
 as part of an otherwise correctly identified command acknowledgement. Every
 angle and policy observation comes from the simulation. Hybrid mode continues
 to require valid IMUs. Terminal output confirms when all five ESPs have acknowledged a command.
-Simulation mode tracks consecutive missing command acknowledgements separately
-for each ESP. An expired command increments that ESP's counter once, and a
+By default (`--ignore-ack-errors False`), simulation mode tracks consecutive
+missing command acknowledgements separately for each ESP. An expired command
+increments that ESP's counter once, and a
 matching acknowledgement for a subsequent command resets it. The stream pauses
 only when one ESP misses **10 consecutive commands**, not after ten viewer polls
 or ten isolated misses. Burst outcomes are evaluated in command order, even if
@@ -418,6 +419,27 @@ Use `--max-missed-acks 10` to configure the threshold, or `--max-missed-acks 1`
 for the previous strict behavior. Continuous mode still waits for the feedback
 timeout before skipping a missing reply, so a disconnected module causes slower
 updates during those tolerated misses. Burst execution timestamps are unchanged.
+
+To ignore **all command acknowledgements**, use `--ignore-ack-errors True`.
+This option works in the continuous, burst, and pipelined simulation launchers.
+It disables ACK validation, ACK waits, missing-ACK counters, and ACK-triggered
+pauses. Incoming feedback is ignored and no new ACK/IMU log records are written;
+existing logs are retained. MQTT connection and publish failures still stop the
+sender. Command spacing, scaling, and servo limits still apply. Hybrid mode
+requires IMU feedback and rejects this option.
+
+```bash
+# Ignore all command ACKs.
+uv run --no-sync python -m mjlab.scripts.snakebot_live_pipeline --ignore-ack-errors True
+# Restore the default ACK checks and ten-consecutive-miss threshold.
+uv run --no-sync python -m mjlab.scripts.snakebot_live_pipeline --ignore-ack-errors False
+```
+
+With ACKs ignored, the pipeline frees queue slots using expected execution
+timestamps rather than confirmed ESP execution. It retains the configured
+limit on future scheduled commands, but delivery and movement are unconfirmed.
+This assumes the ESP clocks match the sender and execute commands on schedule;
+the sender cannot detect a module that stops executing or has a full queue.
 
 The first model module (head) maps to ESP_01 and the tail maps to ESP_05.
 The first angle is the bottom servo / GPIO32, and the second is the top
@@ -501,10 +523,11 @@ sender logs a buffer underrun and schedules a fresh lead time; continuous motion
 cannot be guaranteed when the model produces fewer than ten frames/second at
 the default 100 ms spacing.
 
-No ESP firmware change is required. Because the supplied ESP command queue is
-FIFO, an execution ACK for request N confirms that earlier accepted queued
-commands on that module have been consumed. The sender uses the slowest of the
-five modules' execution progress to cap unconfirmed queued commands at 180,
+No ESP firmware change is required. The supplied ESP command queue is FIFO, so
+an execution ACK for request N confirms that earlier accepted queued commands
+on that module have been consumed. With the default ACK checks enabled, the
+sender uses the slowest of the five modules' execution progress to cap
+unconfirmed queued commands at 180,
 below the firmware's 199 usable entries. A later ACK can free queue capacity
 without pretending an earlier missing ACK was received. The existing
 10-consecutive-miss accounting remains in command order. Run only one command

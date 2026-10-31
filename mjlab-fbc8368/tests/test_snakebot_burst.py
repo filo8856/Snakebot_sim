@@ -78,6 +78,24 @@ def test_scale_changes_offsets_without_scaling_neutral_and_keeps_limits():
   assert servo_payload_data([[100.0, -100.0]] * 5, cfg)["ESP_01"] == [115, 65]
 
 
+def test_ignore_ack_errors_allows_successive_bursts_without_replies(tmp_path):
+  bridge, client, now = bridge_fixture(tmp_path, ignore_ack_errors=True)
+  try:
+    bridge.send([[0.0, 0.0]] * 5)
+    now[0] = 1.051
+    for _ in range(2):
+      payloads = bridge.send_burst([[[5.0, -5.0]] * 5] * 100)
+      acknowledge(bridge, payloads[0], esp_id="OTHER")
+      assert not bridge.poll()
+      now[0] += bridge.cfg.burst_lead_time + 99 * bridge.cfg.burst_frame_interval
+      assert bridge.poll()  # No additional five-second ACK wait between bursts.
+    assert client.publish.call_count == 201
+    assert bridge.latest_samples is None
+    assert not bridge.cfg.ack_status_csv.exists()
+  finally:
+    bridge.close()
+
+
 @pytest.mark.parametrize(
   "settings",
   [

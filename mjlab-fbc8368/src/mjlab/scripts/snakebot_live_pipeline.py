@@ -33,7 +33,7 @@ class PipelineSnakebotConfig(LiveSnakebotConfig):
   burst_frame_interval: float = 0.1
   """100 ms between physical angle sets, independently of simulation capture speed."""
   pipeline_queue_limit: int = 180
-  """Maximum sent-but-unconfirmed commands at the slowest ESP (firmware holds 199)."""
+  """Max outstanding commands; uses scheduled execution when ACK errors are ignored."""
   upload_interval: float = 0.01
   """Pace MQTT uploads at 10 ms instead of flooding the broker with whole batches."""
   capture_frame_rate: float = 30.0
@@ -59,8 +59,8 @@ class PipelineMqttBridge(BurstMqttBridge):
   ESP firmware executes a FIFO. A matching execution ACK for request N proves
   that earlier queued requests at that ESP have been consumed. The oldest
   execution watermark across all five modules bounds queue occupancy, even
-  when individual earlier ACK packets are lost. Wall time alone never frees
-  hardware queue capacity.
+  when individual earlier ACK packets are lost. With ignore_ack_errors=True,
+  scheduled times instead provide assumed progress, without confirming delivery.
   """
 
   cfg: PipelineSnakebotConfig
@@ -99,14 +99,18 @@ class PipelineMqttBridge(BurstMqttBridge):
     self._next_upload = 0.0
     self._next_timestamp: int | None = None
     self._tail_due = 0.0
-    self._dry_due: deque[tuple[int, float]] = deque()
+    self._timed_due: deque[tuple[int, float]] = deque()
+    self._assumed_executed = 0
     self.captured_frames = 0
     self.published_frames = 0
     self.underruns = 0
 
   def _occupancy(self) -> int:
-    """Called with _lock held; conservative bound for the slowest ESP."""
-    return self._request_id - min(self._executed.values())
+    """Called with _lock held; scheduled progress is explicitly opt-in."""
+    executed = min(self._executed.values())
+    if self.cfg.dry_run or self.cfg.ignore_ack_errors:
+      executed = max(executed, self._assumed_executed)
+    return self._request_id - executed
 
   @property
   def can_capture(self) -> bool:
@@ -173,6 +177,8 @@ class PipelineMqttBridge(BurstMqttBridge):
     return True
 
   def _on_feedback(self, client, userdata, msg):
+    if self.cfg.ignore_ack_errors:
+      return
     module = self._topics.get(msg.topic)
     if module is None:
       return
@@ -212,17 +218,17 @@ class PipelineMqttBridge(BurstMqttBridge):
 
   def service_once(self) -> None:
     """One sender iteration, also used with fake clocks by protocol tests."""
-    if self.cfg.dry_run:
+    if self.cfg.dry_run or self.cfg.ignore_ack_errors:
       with self._lock:
-        while self._dry_due and self._dry_due[0][1] <= self._clock():
-          request_id, _ = self._dry_due.popleft()
-          self._executed = dict.fromkeys(self.cfg.module_ids, request_id)
+        while self._timed_due and self._timed_due[0][1] <= self._clock():
+          self._assumed_executed, _ = self._timed_due.popleft()
     ready = super().poll()  # ACK accounting runs only on this sender thread.
     if not self._capture_ready.is_set():
       if not ready:
         return
-      if self.cfg.dry_run:
-        self._executed = dict.fromkeys(self.cfg.module_ids, self._request_id)
+      if self.cfg.dry_run or self.cfg.ignore_ack_errors:
+        with self._lock:
+          self._assumed_executed = self._request_id
       self._capture_ready.set()
     now = self._clock()
     with self._lock:
@@ -246,8 +252,8 @@ class PipelineMqttBridge(BurstMqttBridge):
       self._request_id += 1
       payload = {"request_id": self._request_id, "ts": timestamp, "data": data}
       due = now + (timestamp / 1000 - wall)
-      if self.cfg.dry_run:
-        self._dry_due.append((self._request_id, due))
+      if self.cfg.dry_run or self.cfg.ignore_ack_errors:
+        self._timed_due.append((self._request_id, due))
       else:
         self._burst_pending[self._request_id] = QueuedFrame(payload, due)
       self._next_timestamp = timestamp + round(self.cfg.burst_frame_interval * 1000)
@@ -432,10 +438,17 @@ def run_pipeline(cfg: PipelineSnakebotConfig) -> None:
       f"{cfg.angle_scale:g}x servo scaling.\n"
       "The next frames are prepared and uploaded while earlier frames play.\n"
       f"Hardware queue bound: {cfg.pipeline_queue_limit}; "
-      f"pause after {cfg.max_missed_acks} consecutive missing ACKs per ESP.\n"
+      f"ignore acknowledgement errors: {cfg.ignore_ack_errors}.\n"
       "WASD uses the whole snake axis and affects frames not yet captured.\n"
       "Space pauses future capture/uploads; queued motion cannot be cancelled."
     )
+    if cfg.ignore_ack_errors:
+      print(
+        "ACK checks/waits disabled; queue progress assumes scheduled execution, "
+        "without confirming delivery or movement."
+      )
+    else:
+      print(f"Pause after {cfg.max_missed_acks} consecutive missing ACKs per ESP.")
     bridge.start()
     bridge.send([[0.0, 0.0]] * 5)
     bridge.start_sender()
